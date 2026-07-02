@@ -352,10 +352,10 @@ python "$REVIEW_GEN\skills\management-review-writer\scripts\validate_draft_citat
 
 ### 5.0 推荐：一次性全局配置
 
-如果你不想每个综述工作区都手动配置一次，可以在项目根目录创建：
+如果你不想每个综述工作区都手动配置一次，可以在项目根目录下的 `config` 文件夹中创建：
 
 ```text
-D:\AIProgram\paper-review-project\review-gen\.env.local
+D:\AIProgram\paper-review-project\review-gen\config\.env.local
 ```
 
 内容示例：
@@ -373,7 +373,7 @@ OPENALEX_API_KEY=your-openalex-api-key
 OPENALEX_EMAIL=your-email@university.edu
 ```
 
-现在 `init-workspace` 会自动检测项目根目录的 `.env.local`。如果它存在，且新工作区还没有 `04_fulltext\mineru.env`，脚本会自动复制生成：
+现在 `init-workspace` 会自动检测`config\.env.local`。如果它存在，且新工作区还没有 `04_fulltext\mineru.env`，脚本会自动复制生成：
 
 ```text
 <review-workspace>\04_fulltext\mineru.env
@@ -381,7 +381,7 @@ OPENALEX_EMAIL=your-email@university.edu
 
 如果某个工作区已经有自己的 `mineru.env`，脚本不会覆盖它。这样你可以保留一份全局默认配置，同时允许单个项目单独调整语言、OCR、公式和表格解析设置。
 
-你放在项目根目录的 `API_KEY.txt` 已加入 `.gitignore`。当前推荐做法是把 `API_KEY.txt` 中的密钥整理到同级的 `.env.local`。注意：`.venv` 是 Python 虚拟环境文件夹，不要把配置文件放进 `.venv` 里面。`.env.local` 应该放在 `D:\AIProgram\paper-review-project\review-gen\.env.local`。
+你的真实密钥文件应放在 `config` 目录下，例如 `config\.env.local` 和 `config\API_KEY.txt`。它们都已加入 `.gitignore`。注意：`.venv` 是 Python 虚拟环境文件夹，不要把配置文件放进 `.venv` 里面。
 ### 5.1 MinerU API Key
 
 用途：把 PDF 转成 Markdown。
@@ -441,7 +441,7 @@ $env:SCIHUB_CLI_EMAIL = "your-email@university.edu"
 
 ### 5.3 OpenAlex
 
-当前 `review-gen` 已接入 OpenAlex API key。把 OpenAlex key 放在项目根目录 `.env.local` 的 `OPENALEX_API_KEY` 中，运行 `openalex_ajg_bridge.py` 检索时会自动作为 `api_key` 参数传给 OpenAlex API。OpenAlex 官方提供免费 API key，带 key 的免费额度高于无 key 试用额度。可选的 `OPENALEX_EMAIL` 会作为 `mailto` 参数传给 OpenAlex，便于请求识别。
+当前 `review-gen` 已接入 OpenAlex API key。把 OpenAlex key 放在 `config\.env.local` 的 `OPENALEX_API_KEY` 中，运行 `openalex_ajg_bridge.py` 检索时会自动作为 `api_key` 参数传给 OpenAlex API。OpenAlex 官方提供免费 API key，带 key 的免费额度高于无 key 试用额度。可选的 `OPENALEX_EMAIL` 会作为 `mailto` 参数传给 OpenAlex，便于请求识别。
 
 可选后端路径配置：
 
@@ -585,6 +585,7 @@ MINERU_API_KEY=your-token-from-mineru
 - `07_plan\review_plan.md` 已人工确认并批准
 
 项目的核心纪律是：计划未确认，不进入正式写作；引用审计未通过，不作为最终稿交付。
+
 
 
 

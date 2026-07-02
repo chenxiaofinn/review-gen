@@ -27,7 +27,8 @@ class BuildWorkspaceEnvTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             workspace = root / "workspace"
-            env_local = root / ".env.local"
+            env_local = root / "config" / ".env.local"
+            env_local.parent.mkdir(parents=True, exist_ok=True)
             env_local.write_text(
                 "MINERU_API_KEY=test-token\nPAPER_DOWNLOAD_EMAIL=user@example.com\n",
                 encoding="utf-8",
@@ -50,7 +51,8 @@ class BuildWorkspaceEnvTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             workspace = root / "workspace"
-            env_local = root / ".env.local"
+            env_local = root / "config" / ".env.local"
+            env_local.parent.mkdir(parents=True, exist_ok=True)
             env_local.write_text("MINERU_API_KEY=global-token\n", encoding="utf-8")
             existing_env = workspace / "04_fulltext" / "mineru.env"
             existing_env.parent.mkdir(parents=True)

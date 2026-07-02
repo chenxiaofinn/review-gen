@@ -12,7 +12,7 @@ from typing import Any
 
 REVIEW_GEN_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_REPO_ROOT = REVIEW_GEN_ROOT / "backend" / "openalex-ajg-mcp"
-GLOBAL_ENV_PATH = REVIEW_GEN_ROOT / ".env.local"
+GLOBAL_ENV_PATH = REVIEW_GEN_ROOT / "config" / ".env.local"
 
 
 def load_env_file(path: Path) -> dict[str, str]:

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import csv
@@ -16,7 +16,7 @@ from typing import Any
 DEFAULT_RUNS_ROOT = Path("quality_reports") / "lit_review_runs"
 DEFAULT_MINERU_BASE = "https://mineru.net"
 REVIEW_GEN_ROOT = Path(__file__).resolve().parents[3]
-GLOBAL_ENV_PATH = REVIEW_GEN_ROOT / ".env.local"
+GLOBAL_ENV_PATH = REVIEW_GEN_ROOT / "config" / ".env.local"
 PLAN_DIR_NAME = "07_plan"
 LEGACY_PLAN_DIR_NAME = "07_notes"
 

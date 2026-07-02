@@ -74,7 +74,8 @@ class OpenAlexBridgeEnvTests(unittest.TestCase):
                 self.api_key = api_key
 
         with tempfile.TemporaryDirectory() as tmp:
-            env_path = Path(tmp) / ".env.local"
+            env_path = Path(tmp) / "config" / ".env.local"
+            env_path.parent.mkdir(parents=True, exist_ok=True)
             env_path.write_text(
                 "OPENALEX_API_KEY=key-from-env-local\nOPENALEX_EMAIL=oa@example.com\n",
                 encoding="utf-8",
