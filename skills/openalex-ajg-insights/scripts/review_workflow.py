@@ -15,6 +15,8 @@ from typing import Any
 
 DEFAULT_RUNS_ROOT = Path("quality_reports") / "lit_review_runs"
 DEFAULT_MINERU_BASE = "https://mineru.net"
+REVIEW_GEN_ROOT = Path(__file__).resolve().parents[3]
+GLOBAL_ENV_PATH = REVIEW_GEN_ROOT / ".env.local"
 PLAN_DIR_NAME = "07_plan"
 LEGACY_PLAN_DIR_NAME = "07_notes"
 
@@ -127,6 +129,14 @@ def ensure_parent(path: Path) -> None:
 def write_text(path: Path, content: str) -> None:
     ensure_parent(path)
     path.write_text(content, encoding="utf-8")
+
+
+def copy_global_env_if_available(env_path: Path) -> bool:
+    if env_path.exists() or not GLOBAL_ENV_PATH.exists():
+        return False
+    ensure_parent(env_path)
+    shutil.copy2(GLOBAL_ENV_PATH, env_path)
+    return True
 
 
 def write_json(path: Path, payload: Any) -> None:
@@ -268,6 +278,8 @@ def build_workspace(workspace: Path, topic: str) -> dict[str, str]:
                 ]
             ),
         )
+    env_path = workspace / "04_fulltext" / "mineru.env"
+    env_created_from_global = copy_global_env_if_available(env_path)
 
     intake_path = workspace / "04_fulltext" / "pdf_intake_rules.txt"
     if not intake_path.exists():
@@ -293,6 +305,9 @@ def build_workspace(workspace: Path, topic: str) -> dict[str, str]:
         "evidence_table": str(evidence_path),
         "fulltext_manifest": str(manifest_path),
         "mineru_env_example": str(env_example),
+        "mineru_env": str(env_path),
+        "mineru_env_created_from_global": env_created_from_global,
+        "global_env_path": str(GLOBAL_ENV_PATH),
         "pdf_inbox": str(workspace / "04_fulltext" / "pdf_inbox"),
         "canonical_plan_dir": layout_result["canonical_plan_dir"],
         "legacy_plan_dir": layout_result["legacy_plan_dir"],
@@ -1011,3 +1026,5 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
