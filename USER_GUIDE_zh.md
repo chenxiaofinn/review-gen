@@ -369,6 +369,8 @@ MINERU_ENABLE_FORMULA=true
 MINERU_ENABLE_TABLE=true
 MINERU_IS_OCR=false
 PAPER_DOWNLOAD_EMAIL=your-email@university.edu
+OPENALEX_API_KEY=your-openalex-api-key
+OPENALEX_EMAIL=your-email@university.edu
 ```
 
 现在 `init-workspace` 会自动检测项目根目录的 `.env.local`。如果它存在，且新工作区还没有 `04_fulltext\mineru.env`，脚本会自动复制生成：
@@ -379,7 +381,7 @@ PAPER_DOWNLOAD_EMAIL=your-email@university.edu
 
 如果某个工作区已经有自己的 `mineru.env`，脚本不会覆盖它。这样你可以保留一份全局默认配置，同时允许单个项目单独调整语言、OCR、公式和表格解析设置。
 
-你放在项目根目录的 `API_KEY.txt` 已加入 `.gitignore`，但当前脚本不会读取这个文件。建议把真正要自动使用的配置整理到 `.env.local`。
+你放在项目根目录的 `API_KEY.txt` 已加入 `.gitignore`。当前推荐做法是把 `API_KEY.txt` 中的密钥整理到同级的 `.env.local`。注意：`.venv` 是 Python 虚拟环境文件夹，不要把配置文件放进 `.venv` 里面。`.env.local` 应该放在 `D:\AIProgram\paper-review-project\review-gen\.env.local`。
 ### 5.1 MinerU API Key
 
 用途：把 PDF 转成 Markdown。
@@ -439,7 +441,7 @@ $env:SCIHUB_CLI_EMAIL = "your-email@university.edu"
 
 ### 5.3 OpenAlex
 
-当前 `review-gen` 代码调用的是内置 `backend\openalex-ajg-mcp`，原实现没有读取 OpenAlex API key；它直接请求 OpenAlex API。OpenAlex 官方现在提供免费 API key，带 key 的免费额度高于无 key 试用额度。如果后续要让项目使用你的 OpenAlex key，需要再把 `OPENALEX_API_KEY` 接入 `openalex_ajg_bridge.py` / `openalex_mcp.client.OpenAlexClient`。
+当前 `review-gen` 已接入 OpenAlex API key。把 OpenAlex key 放在项目根目录 `.env.local` 的 `OPENALEX_API_KEY` 中，运行 `openalex_ajg_bridge.py` 检索时会自动作为 `api_key` 参数传给 OpenAlex API。OpenAlex 官方提供免费 API key，带 key 的免费额度高于无 key 试用额度。可选的 `OPENALEX_EMAIL` 会作为 `mailto` 参数传给 OpenAlex，便于请求识别。
 
 可选后端路径配置：
 
@@ -583,5 +585,6 @@ MINERU_API_KEY=your-token-from-mineru
 - `07_plan\review_plan.md` 已人工确认并批准
 
 项目的核心纪律是：计划未确认，不进入正式写作；引用审计未通过，不作为最终稿交付。
+
 
 

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import asyncio
@@ -12,6 +12,34 @@ from typing import Any
 
 REVIEW_GEN_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_REPO_ROOT = REVIEW_GEN_ROOT / "backend" / "openalex-ajg-mcp"
+GLOBAL_ENV_PATH = REVIEW_GEN_ROOT / ".env.local"
+
+
+def load_env_file(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    if not path.exists():
+        return values
+    for raw_line in path.read_text(encoding="utf-8-sig").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip().strip('"').strip("'")
+    return values
+
+
+def resolve_openalex_setting(key: str, env_values: dict[str, str]) -> str | None:
+    return os.environ.get(key) or env_values.get(key) or None
+
+
+def make_openalex_client(client_class: Any) -> Any:
+    env_values = load_env_file(GLOBAL_ENV_PATH)
+    api_key = resolve_openalex_setting("OPENALEX_API_KEY", env_values)
+    email = (
+        resolve_openalex_setting("OPENALEX_EMAIL", env_values)
+        or resolve_openalex_setting("OPENALEX_MAILTO", env_values)
+    )
+    return client_class(email=email, api_key=api_key)
 
 
 def bootstrap_repo(repo_root: Path) -> dict[str, Any]:
@@ -263,7 +291,7 @@ def find_journal(abs_cache: Any, journal_name: str) -> tuple[str, str]:
 
 async def run_search_abs(args: argparse.Namespace, modules: dict[str, Any]) -> dict[str, Any]:
     abs_cache = modules["ABSCache"](str(modules["data_csv"]))
-    client = modules["OpenAlexClient"]()
+    client = make_openalex_client(modules["OpenAlexClient"])
 
     field = args.field.strip() or None
     issns = abs_cache.get_issns(field=field, min_rank=args.min_rank)
@@ -307,7 +335,7 @@ async def run_search_abs(args: argparse.Namespace, modules: dict[str, Any]) -> d
 
 async def run_search_journal(args: argparse.Namespace, modules: dict[str, Any]) -> dict[str, Any]:
     abs_cache = modules["ABSCache"](str(modules["data_csv"]))
-    client = modules["OpenAlexClient"]()
+    client = make_openalex_client(modules["OpenAlexClient"])
 
     journal_issn, resolved_name = find_journal(abs_cache, args.journal_name)
     works, has_more = await client.search_works(

@@ -4,8 +4,9 @@ from typing import List, Dict, Any, Optional
 class OpenAlexClient:
     BASE_URL = "https://api.openalex.org/works"
 
-    def __init__(self, email: Optional[str] = None):
+    def __init__(self, email: Optional[str] = None, api_key: Optional[str] = None):
         self.email = email  # For identifying requests to OpenAlex "polite pool"
+        self.api_key = api_key
 
     async def search_works(self, query: str, issn_list: List[str], limit: int = 0, sort: str = "cited_by_count:desc") -> tuple[List[Dict[str, Any]], bool]:
         """
@@ -36,6 +37,9 @@ class OpenAlexClient:
 
         if self.email:
             params["mailto"] = self.email
+
+        if self.api_key:
+            params["api_key"] = self.api_key
 
         # Determine effective limit
         effective_limit = limit if limit > 0 else MAX_RESULTS
@@ -78,3 +82,4 @@ class OpenAlexClient:
             except Exception as e:
                 print(f"OpenAlex API Error: {e}")
                 return [], False
+
