@@ -1,4 +1,4 @@
-﻿# review-gen 中文用户指南
+# review-gen 中文用户指南
 
 本文档面向个人本地使用，说明 `review-gen` 能做什么、如何按步骤运行，以及 API key、邮箱等环境信息应该放在哪里。
 
@@ -589,3 +589,29 @@ MINERU_API_KEY=your-token-from-mineru
 
 
 
+
+## 可选：前沿文献推送工作流
+
+前沿文献推送是工作区内的可选子流程，固定写入 `<review-workspace>\09_frontier_push\`，不会替代现有的检索、语料库、全文、计划和写作流程。候选文献先进入推送报告，只有你确认后，才通过 promotion 写入 `01_search\raw_json\`，再由原来的 `merge-search-results` 进入正式 corpus。
+
+```powershell
+python "$REVIEW_GEN\skills\openalex-ajg-insights\scripts\review_workflow.py" `
+  --workspace "$WORKSPACE" `
+  init-frontier-push
+
+python "$REVIEW_GEN\skills\openalex-ajg-insights\scripts\review_workflow.py" `
+  --workspace "$WORKSPACE" `
+  draft-interest-profile `
+  --intent "检索企业资产定价影响因素的相关文献"
+
+python "$REVIEW_GEN\skills\openalex-ajg-insights\scripts\review_workflow.py" `
+  --workspace "$WORKSPACE" `
+  run-frontier-push `
+  --profile firm_asset_pricing_determinants `
+  --source-tiers A,C `
+  --input "$WORKSPACE\09_frontier_push\source_records\records.json"
+```
+
+`InterestProfile` 使用 YAML，保存在 `09_frontier_push\profiles\`。其中 `directionality` 用来区分“X 的影响因素”和“X 的影响/经济后果”；默认不要把 X 作为解释变量的论文混入“X 的影响因素”。
+
+LLM 功能使用 OpenAI 兼容配置：`OPENAI_API_KEY`、`OPENAI_BASE_URL`、`OPENAI_MODEL`。没有 key 时不会报错退出，而是写出可复制的 prompt fallback。论文拆解可用 `decompose-paper --paper-key <key>`，输出到 `09_frontier_push\deep_reads\`。

@@ -15,6 +15,9 @@ from typing import Any
 
 DEFAULT_RUNS_ROOT = Path("quality_reports") / "lit_review_runs"
 DEFAULT_MINERU_BASE = "https://mineru.net"
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
 REVIEW_GEN_ROOT = Path(__file__).resolve().parents[3]
 GLOBAL_ENV_PATH = REVIEW_GEN_ROOT / "config" / ".env.local"
 PLAN_DIR_NAME = "07_plan"
@@ -947,6 +950,145 @@ def emit(payload: dict[str, Any], output_format: str) -> None:
         sys.stdout.write("\n")
 
 
+
+
+def init_frontier_push(workspace: Path) -> dict[str, Any]:
+    from frontier_push.sources import write_default_source_catalog
+
+    root = workspace / "09_frontier_push"
+    for rel in ["profiles", "runs", "reports", "deep_reads", "source_records"]:
+        (root / rel).mkdir(parents=True, exist_ok=True)
+
+    sources_path = root / "sources.yml"
+    if not sources_path.exists():
+        write_default_source_catalog(sources_path)
+
+    return {
+        "workspace": str(workspace),
+        "frontier_root": str(root),
+        "sources_path": str(sources_path),
+        "profiles_dir": str(root / "profiles"),
+        "runs_dir": str(root / "runs"),
+        "reports_dir": str(root / "reports"),
+        "deep_reads_dir": str(root / "deep_reads"),
+        "source_records_dir": str(root / "source_records"),
+    }
+
+
+def draft_interest_profile(workspace: Path, intent: str, llm_mode: str) -> dict[str, Any]:
+    from frontier_push.llm import draft_interest_profile as draft_profile
+    from frontier_push.profiles import InterestProfile, profile_path, write_interest_profile
+
+    init_frontier_push(workspace)
+    result = draft_profile(intent=intent, llm_mode=llm_mode, env=load_env_file(GLOBAL_ENV_PATH))
+    profile_payload = result.get("profile")
+    if profile_payload:
+        profile = InterestProfile.from_dict(profile_payload)
+        output_path = profile_path(workspace, profile.id)
+        write_interest_profile(output_path, profile)
+        result["profile_path"] = str(output_path)
+    return result
+
+
+def _load_frontier_records(input_paths: list[str]) -> dict[str, list[dict[str, Any]]]:
+    records_by_source: dict[str, list[dict[str, Any]]] = {}
+    for raw_path in input_paths:
+        path = Path(raw_path)
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+        if isinstance(data, dict):
+            source_id = str(data.get("source_id") or data.get("id") or path.stem)
+            records = data.get("records") or data.get("papers") or []
+            if not isinstance(records, list):
+                raise ValueError(f"Frontier input records must be a list: {path}")
+            records_by_source.setdefault(source_id, []).extend(records)
+        elif isinstance(data, list):
+            records_by_source.setdefault(path.stem, []).extend(data)
+        else:
+            raise ValueError(f"Unsupported frontier input JSON shape: {path}")
+    return records_by_source
+
+
+def run_frontier_push(
+    workspace: Path,
+    profile_id: str,
+    source_tiers: list[str],
+    input_paths: list[str],
+    run_id: str | None = None,
+) -> dict[str, Any]:
+    from frontier_push.profiles import load_interest_profile, profile_path
+    from frontier_push.runner import run_frontier_push_from_records
+
+    init_frontier_push(workspace)
+    if not input_paths:
+        default_dir = workspace / "09_frontier_push" / "source_records"
+        input_paths = [str(path) for path in sorted(default_dir.glob("*.json"))]
+    if not input_paths:
+        raise ValueError("Provide --input JSON files or place records in 09_frontier_push/source_records/.")
+
+    profile = load_interest_profile(profile_path(workspace, profile_id))
+    records_by_source = _load_frontier_records(input_paths)
+    return run_frontier_push_from_records(
+        workspace=workspace,
+        profile=profile,
+        records_by_source=records_by_source,
+        source_tiers=source_tiers,
+        run_id=run_id,
+    )
+
+
+def promote_frontier_candidates(workspace: Path, run_id: str, candidate_ids: list[str]) -> dict[str, Any]:
+    from frontier_push.promotion import promote_frontier_candidates as promote
+
+    return promote(workspace, run_id, candidate_ids)
+
+
+def _find_paper_for_decomposition(workspace: Path, paper_key: str) -> dict[str, Any]:
+    for row in read_jsonl(workspace / "02_corpus" / "master_corpus.jsonl"):
+        if row.get("paper_key") == paper_key:
+            return {
+                "title": row.get("title"),
+                "authors": [],
+                "year": row.get("year"),
+                "venue": row.get("journal"),
+                "abstract": row.get("abstract"),
+                "doi": row.get("doi"),
+                "openalex_id": row.get("openalex_id"),
+            }
+    frontier_runs = workspace / "09_frontier_push" / "runs"
+    if frontier_runs.exists():
+        from frontier_push.candidates import load_candidates_jsonl
+
+        for candidates_path in sorted(frontier_runs.glob("*/candidates.jsonl")):
+            for candidate in load_candidates_jsonl(candidates_path):
+                if candidate.candidate_id == paper_key:
+                    return candidate.to_dict()
+    raise ValueError(f"Paper key not found in corpus or frontier candidates: {paper_key}")
+
+
+def _load_excerpt_files(paths: list[str]) -> list[str]:
+    return [Path(path).read_text(encoding="utf-8-sig") for path in paths]
+
+
+def decompose_frontier_paper(
+    workspace: Path,
+    paper_key: str,
+    llm_mode: str,
+    excerpt_paths: list[str],
+) -> dict[str, Any]:
+    from frontier_push.decomposition import decompose_paper
+
+    init_frontier_push(workspace)
+    paper = _find_paper_for_decomposition(workspace, paper_key)
+    excerpts = _load_excerpt_files(excerpt_paths)
+    return decompose_paper(
+        workspace=workspace,
+        paper_key=paper_key,
+        paper=paper,
+        excerpts=excerpts,
+        llm_mode=llm_mode,
+        env=load_env_file(GLOBAL_ENV_PATH),
+    )
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Systematic literature review workflow helper.")
     parser.add_argument("--topic", help="Review topic. Used to derive the workspace if --workspace is omitted.")
@@ -981,6 +1123,27 @@ def parse_args() -> argparse.Namespace:
     retrieve_cmd.add_argument("--top-k", type=int, default=8)
     retrieve_cmd.add_argument("--include-neighbors", action="store_true")
 
+
+    subparsers.add_parser("init-frontier-push", help="Create the optional frontier-push workspace layout.")
+
+    draft_profile_cmd = subparsers.add_parser("draft-interest-profile", help="Draft a reviewable InterestProfile from Chinese intent.")
+    draft_profile_cmd.add_argument("--intent", required=True)
+    draft_profile_cmd.add_argument("--llm-mode", choices=("auto", "api", "prompt-only"), default="auto")
+
+    run_frontier_cmd = subparsers.add_parser("run-frontier-push", help="Generate frontier candidates and a push report.")
+    run_frontier_cmd.add_argument("--profile", required=True, help="InterestProfile id.")
+    run_frontier_cmd.add_argument("--source-tiers", default="A,C", help="Comma-separated source tiers, for example A,C.")
+    run_frontier_cmd.add_argument("--input", nargs="*", default=[], help="Frontier source JSON files. Defaults to 09_frontier_push/source_records/*.json.")
+    run_frontier_cmd.add_argument("--run-id", help="Optional stable run id for repeatable output paths.")
+
+    promote_frontier_cmd = subparsers.add_parser("promote-frontier-candidates", help="Promote selected frontier candidates into raw search JSON.")
+    promote_frontier_cmd.add_argument("--run-id", required=True)
+    promote_frontier_cmd.add_argument("--candidate-ids", nargs="+", required=True)
+
+    decompose_cmd = subparsers.add_parser("decompose-paper", help="Create a two-stage paper decomposition prompt or LLM draft.")
+    decompose_cmd.add_argument("--paper-key", required=True)
+    decompose_cmd.add_argument("--llm-mode", choices=("auto", "api", "prompt-only"), default="auto")
+    decompose_cmd.add_argument("--excerpt-file", nargs="*", default=[], help="Optional text/Markdown excerpt files to ground the decomposition.")
     return parser.parse_args()
 
 
@@ -1010,6 +1173,17 @@ def main() -> int:
                 payload = chunk_markdown(workspace, args.target_words, args.overlap_words)
             elif args.command == "retrieve-chunks":
                 payload = retrieve_chunks(workspace, args.query, args.purpose, args.top_k, args.include_neighbors)
+            elif args.command == "init-frontier-push":
+                payload = init_frontier_push(workspace)
+            elif args.command == "draft-interest-profile":
+                payload = draft_interest_profile(workspace, args.intent, args.llm_mode)
+            elif args.command == "run-frontier-push":
+                tiers = [tier.strip() for tier in args.source_tiers.split(",") if tier.strip()]
+                payload = run_frontier_push(workspace, args.profile, tiers, args.input, args.run_id)
+            elif args.command == "promote-frontier-candidates":
+                payload = promote_frontier_candidates(workspace, args.run_id, args.candidate_ids)
+            elif args.command == "decompose-paper":
+                payload = decompose_frontier_paper(workspace, args.paper_key, args.llm_mode, args.excerpt_file)
             else:
                 raise ValueError(f"Unsupported command: {args.command}")
             payload["canonical_plan_dir"] = layout_result["canonical_plan_dir"]
@@ -1026,5 +1200,7 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
 
 

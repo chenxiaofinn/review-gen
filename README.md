@@ -1,4 +1,4 @@
-﻿# review-gen
+# review-gen
 
 `review-gen` is a workflow toolkit for long-horizon literature reviews in management, strategy, entrepreneurship, innovation, and organization studies.
 
@@ -262,3 +262,27 @@ review-gen/
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+## Optional Frontier Push Workflow
+
+`review-gen` can also maintain a workspace-local frontier push subflow under `09_frontier_push/`. This is optional and does not replace the normal search, corpus, manifest, planner, or writer workflow.
+
+```bash
+python skills/openalex-ajg-insights/scripts/review_workflow.py \
+  --workspace <review-workspace> \
+  init-frontier-push
+
+python skills/openalex-ajg-insights/scripts/review_workflow.py \
+  --workspace <review-workspace> \
+  draft-interest-profile \
+  --intent "检索企业资产定价影响因素的相关文献"
+
+python skills/openalex-ajg-insights/scripts/review_workflow.py \
+  --workspace <review-workspace> \
+  run-frontier-push \
+  --profile firm_asset_pricing_determinants \
+  --source-tiers A,C \
+  --input <records.json>
+```
+
+Candidate papers are written to `09_frontier_push/runs/<run-id>/candidates.jsonl` and reports to `09_frontier_push/reports/`. They are not added to `02_corpus/master_corpus.jsonl` until selected candidates are promoted into `01_search/raw_json/` and the normal merge step is run. LLM features use OpenAI-compatible `OPENAI_API_KEY`, `OPENAI_BASE_URL`, and `OPENAI_MODEL`; without a key the workflow writes a complete prompt fallback.
