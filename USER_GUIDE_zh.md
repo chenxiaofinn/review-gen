@@ -612,6 +612,26 @@ python "$REVIEW_GEN\skills\openalex-ajg-insights\scripts\review_workflow.py" `
   --input "$WORKSPACE\09_frontier_push\source_records\records.json"
 ```
 
+### 用自然语言指挥前沿推送
+
+日常使用时不需要记住上面的 CLI 参数。你只需要记住工作流顺序，并用自然语言要求 Codex 执行。推荐顺序如下：
+
+1. “为这个主题初始化前沿文献推送工作区。”
+2. “根据这个中文研究意图生成选题 profile：……”
+3. “帮我检查这个 profile 是否符合方向性，比如我要的是 X 的影响因素，不要混入 X 的经济后果。”
+4. “用这个 profile 跑一次前沿文献推送。”
+5. “帮我阅读推送报告，挑出值得进入 corpus 的候选。”
+6. “把这些候选 promote 到现有综述流程。”
+7. “对这篇论文做文献拆解梳理。”
+
+Codex 在执行这些自然语言指令时，应先确认当前工作区、profile、来源记录和 LLM 配置；如果没有 API key，应使用 prompt fallback；如果用户没有明确确认候选，不得把推送候选写入正式 corpus。也就是说，正确的产品逻辑是：先建或复用主题 profile，再跑候选推送，先看报告，确认后才进入 corpus，最后再做深读拆解。
+
+例如，可以直接说：
+
+> 帮我针对“企业资产定价影响因素”做一次前沿文献推送，但先不要写入 corpus。
+
+这句话表示只执行初始化、profile 生成或复用、候选推送和报告审查；除非用户随后明确指定候选并要求 promotion，否则流程应停在报告阶段。
+
 `InterestProfile` 使用 YAML，保存在 `09_frontier_push\profiles\`。其中 `directionality` 用来区分“X 的影响因素”和“X 的影响/经济后果”；默认不要把 X 作为解释变量的论文混入“X 的影响因素”。
 
 LLM 功能使用 OpenAI 兼容配置：`OPENAI_API_KEY`、`OPENAI_BASE_URL`、`OPENAI_MODEL`。没有 key 时不会报错退出，而是写出可复制的 prompt fallback。论文拆解可用 `decompose-paper --paper-key <key>`，输出到 `09_frontier_push\deep_reads\`。
