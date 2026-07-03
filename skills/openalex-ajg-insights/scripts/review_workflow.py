@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import csv
 import json
 import re
@@ -990,13 +991,22 @@ def draft_interest_profile(workspace: Path, intent: str, llm_mode: str) -> dict[
     return result
 
 
+def _frontier_source_id_from_payload(data: dict[str, Any], path: Path) -> str:
+    from frontier_push.source_collection import canonical_source_id
+
+    raw_source_id = data.get("source_id") or data.get("id")
+    if not raw_source_id and data.get("search_type") == "abs":
+        raw_source_id = "abs_ajg_4star"
+    return canonical_source_id(str(raw_source_id or path.stem))
+
+
 def _load_frontier_records(input_paths: list[str]) -> dict[str, list[dict[str, Any]]]:
     records_by_source: dict[str, list[dict[str, Any]]] = {}
     for raw_path in input_paths:
         path = Path(raw_path)
         data = json.loads(path.read_text(encoding="utf-8-sig"))
         if isinstance(data, dict):
-            source_id = str(data.get("source_id") or data.get("id") or path.stem)
+            source_id = _frontier_source_id_from_payload(data, path)
             records = data.get("records") or data.get("papers") or []
             if not isinstance(records, list):
                 raise ValueError(f"Frontier input records must be a list: {path}")
@@ -1014,6 +1024,8 @@ def run_frontier_push(
     source_tiers: list[str],
     input_paths: list[str],
     run_id: str | None = None,
+    year_start: int | None = None,
+    year_end: int | None = None,
 ) -> dict[str, Any]:
     from frontier_push.profiles import load_interest_profile, profile_path
     from frontier_push.runner import run_frontier_push_from_records
@@ -1033,6 +1045,128 @@ def run_frontier_push(
         records_by_source=records_by_source,
         source_tiers=source_tiers,
         run_id=run_id,
+        year_start=year_start,
+        year_end=year_end,
+    )
+
+
+def _parse_csv_arg(value: str) -> list[str]:
+    return [item.strip() for item in str(value or "").split(",") if item.strip()]
+
+
+async def _collect_frontier_sources_async(
+    workspace: Path,
+    profile_id: str,
+    source_ids: list[str],
+    year_start: int,
+    year_end: int,
+    limit_per_query: int,
+    max_queries: int,
+) -> dict[str, Any]:
+    from openalex_ajg_bridge import DEFAULT_REPO_ROOT, bootstrap_repo, make_openalex_client, tokenize_query, work_to_record
+    from frontier_push.profiles import load_interest_profile, profile_path
+    from frontier_push.source_collection import (
+        build_profile_queries,
+        build_source_payload,
+        chunked,
+        deduplicate_records,
+        filter_records_by_year,
+        resolve_tier_a_journals,
+        write_source_payload,
+    )
+
+    init_frontier_push(workspace)
+    profile = load_interest_profile(profile_path(workspace, profile_id))
+    queries = build_profile_queries(profile, max_queries=max_queries)
+    modules = bootstrap_repo(DEFAULT_REPO_ROOT)
+    resolved_sources = resolve_tier_a_journals(modules["data_csv"], source_ids)
+    client = make_openalex_client(modules["OpenAlexClient"])
+
+    output_dir = workspace / "09_frontier_push" / "source_records"
+    outputs = []
+    for source_id, resolved in resolved_sources.items():
+        issns = [journal.issn for journal in resolved.journals]
+        collected_records: list[dict[str, Any]] = []
+        api_calls = 0
+        has_more = False
+
+        for query in queries:
+            query_tokens = tokenize_query(query)
+            for issn_chunk in chunked(issns, 50):
+                api_calls += 1
+                works, chunk_has_more = await client.search_works(
+                    query,
+                    issn_chunk,
+                    limit=limit_per_query,
+                    sort="publication_date:desc",
+                )
+                has_more = has_more or bool(chunk_has_more)
+                for work in works:
+                    record = work_to_record(work, modules["reconstruct_abstract"], query_tokens)
+                    record["source_query"] = query
+                    collected_records.append(record)
+
+        deduped = deduplicate_records(collected_records)
+        filtered_records, year_stats = filter_records_by_year(deduped, year_start=year_start, year_end=year_end)
+        diagnostics = {
+            "query_count": len(queries),
+            "api_calls": api_calls,
+            "journal_count": len(resolved.journals),
+            "issn_count": len(issns),
+            "unresolved_journals": resolved.unresolved_journals,
+            "raw_records": len(collected_records),
+            "deduped_records": len(deduped),
+            "has_more": has_more,
+            "year_filter": year_stats,
+        }
+        payload = build_source_payload(
+            source_id=source_id,
+            source_tier=resolved.source_tier,
+            source_type=resolved.source_type,
+            profile_id=profile.id,
+            year_start=year_start,
+            year_end=year_end,
+            records=filtered_records,
+            diagnostics=diagnostics,
+        )
+        output_path = output_dir / f"{source_id}_{profile.id}_{year_start}_{year_end}.json"
+        write_source_payload(output_path, payload)
+        outputs.append({
+            "source_id": source_id,
+            "output_path": str(output_path),
+            "record_count": len(filtered_records),
+            "diagnostics": diagnostics,
+        })
+
+    return {
+        "workspace": str(workspace),
+        "profile_id": profile_id,
+        "source_ids": list(resolved_sources.keys()),
+        "year_start": year_start,
+        "year_end": year_end,
+        "outputs": outputs,
+    }
+
+
+def collect_frontier_sources(
+    workspace: Path,
+    profile_id: str,
+    source_ids: list[str],
+    year_start: int,
+    year_end: int,
+    limit_per_query: int = 200,
+    max_queries: int = 12,
+) -> dict[str, Any]:
+    return asyncio.run(
+        _collect_frontier_sources_async(
+            workspace=workspace,
+            profile_id=profile_id,
+            source_ids=source_ids,
+            year_start=year_start,
+            year_end=year_end,
+            limit_per_query=limit_per_query,
+            max_queries=max_queries,
+        )
     )
 
 
@@ -1135,6 +1269,16 @@ def parse_args() -> argparse.Namespace:
     run_frontier_cmd.add_argument("--source-tiers", default="A,C", help="Comma-separated source tiers, for example A,C.")
     run_frontier_cmd.add_argument("--input", nargs="*", default=[], help="Frontier source JSON files. Defaults to 09_frontier_push/source_records/*.json.")
     run_frontier_cmd.add_argument("--run-id", help="Optional stable run id for repeatable output paths.")
+    run_frontier_cmd.add_argument("--year-start", type=int, help="Optional inclusive start year for source records.")
+    run_frontier_cmd.add_argument("--year-end", type=int, help="Optional inclusive end year for source records.")
+
+    collect_frontier_cmd = subparsers.add_parser("collect-frontier-sources", help="Collect Tier A frontier source records into source_records.")
+    collect_frontier_cmd.add_argument("--profile", required=True, help="InterestProfile id.")
+    collect_frontier_cmd.add_argument("--source-ids", default="abs_ajg_4star,ft50,utd24", help="Comma-separated source ids. Supported: abs_ajg_4star,ft50,utd24.")
+    collect_frontier_cmd.add_argument("--year-start", type=int, required=True)
+    collect_frontier_cmd.add_argument("--year-end", type=int, required=True)
+    collect_frontier_cmd.add_argument("--limit-per-query", type=int, default=200)
+    collect_frontier_cmd.add_argument("--max-queries", type=int, default=12)
 
     promote_frontier_cmd = subparsers.add_parser("promote-frontier-candidates", help="Promote selected frontier candidates into raw search JSON.")
     promote_frontier_cmd.add_argument("--run-id", required=True)

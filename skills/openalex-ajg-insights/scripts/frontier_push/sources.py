@@ -5,26 +5,42 @@ from typing import Any
 
 import yaml
 
+from .source_collection import FT50_JOURNALS, UTD24_JOURNALS
+
 
 def default_source_catalog() -> dict[str, Any]:
     return {
-        "version": 1,
+        "version": 2,
         "sources": [
             {
-                "id": "abs4_star",
+                "id": "abs_ajg_4star",
                 "name": "ABS/AJG 4* journals",
                 "tier": "A",
                 "status": "active",
                 "type": "openalex_ajg",
-                "description": "Quality anchor for elite ABS/AJG 4* journals.",
+                "resolver": "ajg_csv_rank",
+                "rank": "4*",
+                "description": "Quality anchor resolved from the bundled AJG CSV; AJG 3+ is intentionally out of scope.",
             },
             {
-                "id": "utd24_ft50",
-                "name": "UTD24 and FT50 journals",
+                "id": "ft50",
+                "name": "Financial Times 50 journals",
                 "tier": "A",
-                "status": "config_only",
-                "type": "journal_list",
-                "description": "Quality anchor list for later ISSN-backed expansion.",
+                "status": "active",
+                "type": "openalex_ajg",
+                "resolver": "named_journal_pool_via_ajg_csv",
+                "journal_names": FT50_JOURNALS,
+                "description": "FT50 named pool resolved against the bundled AJG CSV for ISSNs.",
+            },
+            {
+                "id": "utd24",
+                "name": "UTD24 journals",
+                "tier": "A",
+                "status": "active",
+                "type": "openalex_ajg",
+                "resolver": "named_journal_pool_via_ajg_csv",
+                "journal_names": UTD24_JOURNALS,
+                "description": "UTD24 named pool resolved against the bundled AJG CSV for ISSNs.",
             },
             {
                 "id": "top_conferences",
@@ -91,4 +107,3 @@ def load_source_catalog(path: Path) -> dict[str, Any]:
     if not isinstance(data, dict) or not isinstance(data.get("sources"), list):
         raise ValueError(f"Source catalog must contain a sources list: {path}")
     return data
-

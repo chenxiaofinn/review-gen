@@ -106,6 +106,7 @@ def parse_args() -> argparse.Namespace:
         help="Minimum journal rank.",
     )
     search_abs.add_argument("--year-start", type=int, default=2020, help="Start year.")
+    search_abs.add_argument("--year-end", type=int, help="Inclusive end year.")
     search_abs.add_argument("--limit", type=int, default=50, help="Maximum results.")
     search_abs.add_argument(
         "--export-dir",
@@ -117,6 +118,7 @@ def parse_args() -> argparse.Namespace:
     search_journal.add_argument("--journal-name", required=True, help="Journal name.")
     search_journal.add_argument("--query", required=True, help="Search query or * for all.")
     search_journal.add_argument("--year-start", type=int, default=2020, help="Start year.")
+    search_journal.add_argument("--year-end", type=int, help="Inclusive end year.")
     search_journal.add_argument("--limit", type=int, default=50, help="Maximum results.")
     search_journal.add_argument(
         "--export-dir",
@@ -219,6 +221,44 @@ def estimate_full_text_need(paper: dict[str, Any], query_tokens: list[str]) -> d
     }
 
 
+def work_publication_year(work: dict[str, Any]) -> int | None:
+    try:
+        return int(work.get("publication_year"))
+    except (TypeError, ValueError):
+        return None
+
+
+def filter_works_by_year(
+    works: list[dict[str, Any]],
+    year_start: int | None = None,
+    year_end: int | None = None,
+) -> list[dict[str, Any]]:
+    filtered: list[dict[str, Any]] = []
+    for work in works:
+        year = work_publication_year(work)
+        if year is None:
+            continue
+        if year_start is not None and year < year_start:
+            continue
+        if year_end is not None and year > year_end:
+            continue
+        filtered.append(work)
+    return filtered
+
+
+def with_frontier_source_metadata(payload: dict[str, Any]) -> dict[str, Any]:
+    enriched = dict(payload)
+    if enriched.get("search_type") == "abs":
+        enriched.setdefault("source_id", "abs_ajg_4star")
+        enriched.setdefault("source_tier", "A")
+        enriched.setdefault("source_type", "openalex_ajg")
+    elif enriched.get("search_type") == "journal":
+        enriched.setdefault("source_id", "abs_ajg_journal")
+        enriched.setdefault("source_tier", "A")
+        enriched.setdefault("source_type", "openalex_ajg")
+    return enriched
+
+
 def work_to_record(work: dict[str, Any], reconstruct_abstract: Any, query_tokens: list[str]) -> dict[str, Any]:
     primary_location = work.get("primary_location") or {}
     source = primary_location.get("source") or {}
@@ -304,7 +344,7 @@ async def run_search_abs(args: argparse.Namespace, modules: dict[str, Any]) -> d
         limit=normalize_limit(args.limit),
         sort="publication_date:desc",
     )
-    filtered_works = [work for work in works if (work.get("publication_year") or 0) >= args.year_start]
+    filtered_works = filter_works_by_year(works, year_start=args.year_start, year_end=args.year_end)
     query_tokens = tokenize_query(args.query)
     papers = [
         work_to_record(work, modules["reconstruct_abstract"], query_tokens)
@@ -319,18 +359,19 @@ async def run_search_abs(args: argparse.Namespace, modules: dict[str, Any]) -> d
         modules["works_to_ris_block"],
     )
 
-    return {
+    return with_frontier_source_metadata({
         "search_type": "abs",
         "query": args.query,
         "field": field or "",
         "min_rank": args.min_rank,
         "year_start": args.year_start,
+        "year_end": args.year_end,
         "limit": args.limit,
         "count": len(papers),
         "has_more": has_more,
         "papers": papers,
         "exports": exports,
-    }
+    })
 
 
 async def run_search_journal(args: argparse.Namespace, modules: dict[str, Any]) -> dict[str, Any]:
@@ -344,7 +385,7 @@ async def run_search_journal(args: argparse.Namespace, modules: dict[str, Any]) 
         limit=normalize_limit(args.limit),
         sort="publication_date:desc",
     )
-    filtered_works = [work for work in works if (work.get("publication_year") or 0) >= args.year_start]
+    filtered_works = filter_works_by_year(works, year_start=args.year_start, year_end=args.year_end)
     query_tokens = tokenize_query(args.query)
     papers = [
         work_to_record(work, modules["reconstruct_abstract"], query_tokens)
@@ -359,18 +400,19 @@ async def run_search_journal(args: argparse.Namespace, modules: dict[str, Any]) 
         modules["works_to_ris_block"],
     )
 
-    return {
+    return with_frontier_source_metadata({
         "search_type": "journal",
         "journal_name": args.journal_name,
         "resolved_journal_name": resolved_name,
         "query": args.query,
         "year_start": args.year_start,
+        "year_end": args.year_end,
         "limit": args.limit,
         "count": len(papers),
         "has_more": has_more,
         "papers": papers,
         "exports": exports,
-    }
+    })
 
 
 def summarize_report(file_path: Path) -> dict[str, Any]:

@@ -92,5 +92,49 @@ class OpenAlexBridgeEnvTests(unittest.TestCase):
         self.assertEqual("oa@example.com", client.email)
 
 
+class OpenAlexBridgeFrontierSourceTests(unittest.TestCase):
+    def test_search_abs_parse_args_accepts_year_end(self) -> None:
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "openalex_ajg_bridge.py",
+                "search-abs",
+                "--query",
+                "generative AI",
+                "--min-rank",
+                "4*",
+                "--year-start",
+                "2025",
+                "--year-end",
+                "2026",
+            ],
+        ):
+            args = bridge_module.parse_args()
+
+        self.assertEqual(2025, args.year_start)
+        self.assertEqual(2026, args.year_end)
+
+    def test_filter_works_by_year_uses_inclusive_start_and_end(self) -> None:
+        works = [
+            {"title": "Old", "publication_year": 2024},
+            {"title": "Start", "publication_year": 2025},
+            {"title": "End", "publication_year": 2026},
+            {"title": "Future", "publication_year": 2027},
+            {"title": "Missing"},
+        ]
+
+        filtered = bridge_module.filter_works_by_year(works, year_start=2025, year_end=2026)
+
+        self.assertEqual(["Start", "End"], [work["title"] for work in filtered])
+
+    def test_abs_payload_has_frontier_source_provenance(self) -> None:
+        payload = bridge_module.with_frontier_source_metadata({"search_type": "abs"})
+
+        self.assertEqual("abs_ajg_4star", payload["source_id"])
+        self.assertEqual("A", payload["source_tier"])
+        self.assertEqual("openalex_ajg", payload["source_type"])
+
+
 if __name__ == "__main__":
     unittest.main()

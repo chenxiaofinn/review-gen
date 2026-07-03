@@ -109,6 +109,97 @@ class FrontierPushCliTests(unittest.TestCase):
             self.assertEqual(1, payload["candidate_count"])
             self.assertTrue(Path(payload["report_path"]).exists())
 
+    def test_run_frontier_push_filters_records_by_year_range(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            review_workflow.init_frontier_push(workspace)
+            profile_path = workspace / "09_frontier_push" / "profiles" / "firm_asset_pricing_determinants.yml"
+            profile_path.write_text(
+                "\n".join(
+                    [
+                        "id: firm_asset_pricing_determinants",
+                        "name: Firm asset pricing determinants",
+                        "directionality: factors_of",
+                        "target_construct: expected stock returns",
+                        "exact_phrases:",
+                        "  - expected stock returns",
+                        "near_phrases:",
+                        "  - return predictability",
+                        "related_terms:",
+                        "  - profitability",
+                        "exclude_keywords:",
+                        "  - option pricing",
+                        "jel_codes:",
+                        "  - G12",
+                        "natural_language: Track determinants of expected stock returns.",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            records_path = workspace / "records.json"
+            records_path.write_text(
+                json.dumps(
+                    {
+                        "source_id": "abs_ajg_4star",
+                        "records": [
+                            {"title": "Old Expected Stock Returns", "year": 2024, "journal": "Journal of Finance", "abstract": "Expected stock returns and profitability.", "doi": "10.1/old"},
+                            {"title": "Current Expected Stock Returns", "year": 2025, "journal": "Journal of Finance", "abstract": "Expected stock returns and profitability.", "doi": "10.1/current"},
+                            {"title": "Future Expected Stock Returns", "year": 2027, "journal": "Journal of Finance", "abstract": "Expected stock returns and profitability.", "doi": "10.1/future"},
+                            {"title": "Missing Expected Stock Returns", "journal": "Journal of Finance", "abstract": "Expected stock returns and profitability.", "doi": "10.1/missing"},
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            payload = review_workflow.run_frontier_push(
+                workspace,
+                "firm_asset_pricing_determinants",
+                ["A"],
+                [str(records_path)],
+                "2026-07-03Tyear-filter",
+                year_start=2025,
+                year_end=2026,
+            )
+
+            candidates = Path(payload["candidates_path"]).read_text(encoding="utf-8")
+            self.assertEqual(1, payload["candidate_count"])
+            self.assertIn("Current Expected Stock Returns", candidates)
+            self.assertNotIn("Old Expected Stock Returns", candidates)
+            self.assertNotIn("Future Expected Stock Returns", candidates)
+            self.assertEqual(1, payload["year_filter"]["kept_records"])
+            self.assertEqual(2, payload["year_filter"]["excluded_out_of_range"])
+            self.assertEqual(1, payload["year_filter"]["excluded_missing_year"])
+
+    def test_parse_args_includes_collect_frontier_sources(self) -> None:
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "review_workflow.py",
+                "--workspace",
+                "workspace",
+                "collect-frontier-sources",
+                "--profile",
+                "generative_ai_economic_consequences",
+                "--source-ids",
+                "abs_ajg_4star,ft50,utd24",
+                "--year-start",
+                "2025",
+                "--year-end",
+                "2026",
+            ],
+        ):
+            args = review_workflow.parse_args()
+
+        self.assertEqual("collect-frontier-sources", args.command)
+        self.assertEqual("generative_ai_economic_consequences", args.profile)
+        self.assertEqual("abs_ajg_4star,ft50,utd24", args.source_ids)
+        self.assertEqual(2025, args.year_start)
+        self.assertEqual(2026, args.year_end)
+
 
 if __name__ == "__main__":
     unittest.main()
