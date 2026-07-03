@@ -55,6 +55,23 @@ Literature push work must remain a workspace subflow.
 - Missing LLM credentials must produce a prompt fallback, not a failed workflow.
 - Distinguish "factors of X" from "effects of X" unless the user requests both.
 
+## Frontier Push Runbook
+
+Use `docs/governance/runbooks/frontier-push-ta-only.md` for TA-only
+frontier-push runs.
+
+- TA-only means `abs_ajg_4star,ft50,utd24`.
+- Match the year window to frontier semantics: default to the most recent
+  roughly 18 months, or to the user's explicit window.
+- Pass explicit `--input` files to `run-frontier-push` from the current
+  `collect-frontier-sources` call; do not rely on historical
+  `source_records/*.json` auto-discovery.
+- Do not run Tier B or Tier C sources unless the user explicitly asks.
+- Do not promote candidates without explicit user-selected `candidate_ids`.
+- On Windows, prefer a UTF-8 Python subprocess runner for non-ASCII workspace
+  paths.
+- Never write API keys or tokens into logs.
+
 ## Testing And Git
 
 - Start implementation by checking `git status`.

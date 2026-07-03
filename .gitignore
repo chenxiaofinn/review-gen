@@ -14,3 +14,4 @@ quality_reports/
 API_KEY.txt
 config/.env.local
 config/API_KEY.txt
+**/logs/

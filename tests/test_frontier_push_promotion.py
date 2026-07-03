@@ -73,6 +73,87 @@ class FrontierPromotionTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "fp_missing"):
                 promote_frontier_candidates(workspace, run_id, ["fp_missing"])
 
+    def test_promote_writes_consolidated_ris(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            run_id = "2026-07-03T180322"
+            candidates_path = workspace / "09_frontier_push" / "runs" / run_id / "candidates.jsonl"
+            write_candidates_jsonl(
+                candidates_path,
+                [
+                    make_candidate("fp_first", "10.1111/first", "First Paper Title"),
+                    make_candidate("fp_second", "10.1111/second", "Second Paper Title"),
+                ],
+            )
+
+            result = promote_frontier_candidates(workspace, run_id, ["fp_first", "fp_second"])
+
+            ris_path = Path(result["consolidated_ris_path"])
+            self.assertTrue(ris_path.exists())
+            # Path uses the run-id stem, parallel to the raw JSON path
+            self.assertEqual(
+                workspace / "02_corpus" / "zotero_ris" / "frontier_push_2026-07-03T180322.ris",
+                ris_path,
+            )
+            # Only one RIS file for the whole promotion, not one per candidate
+            ris_dir = workspace / "02_corpus" / "zotero_ris"
+            self.assertEqual(1, len(list(ris_dir.glob("*.ris"))))
+            ris_text = ris_path.read_text(encoding="utf-8")
+            # Two records, each with TY - JOUR and ER -
+            self.assertEqual(2, ris_text.count("TY  - JOUR"))
+            self.assertEqual(2, ris_text.count("ER  -"))
+            # Both papers are present, in the order they were promoted
+            self.assertIn("First Paper Title", ris_text)
+            self.assertIn("Second Paper Title", ris_text)
+            # DOI / authors / keywords are emitted for each record
+            self.assertIn("DO  - 10.1111/first", ris_text)
+            self.assertIn("DO  - 10.1111/second", ris_text)
+            self.assertIn("AU  - Author, A", ris_text)
+            # match_reason keywords are derived, not hard-coded
+            self.assertIn("KW  - expected stock returns", ris_text)
+
+    def test_promote_consolidated_ris_overwrites_existing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            run_id = "2026-07-03T180322"
+            candidates_path = workspace / "09_frontier_push" / "runs" / run_id / "candidates.jsonl"
+            write_candidates_jsonl(
+                candidates_path,
+                [
+                    make_candidate("fp_a", "10.1111/a", "Paper A"),
+                    make_candidate("fp_b", "10.1111/b", "Paper B"),
+                ],
+            )
+            # First promotion: 2 candidates
+            promote_frontier_candidates(workspace, run_id, ["fp_a", "fp_b"])
+            # Second promotion with same run_id but fewer candidates
+            result = promote_frontier_candidates(workspace, run_id, ["fp_a"])
+            ris_path = Path(result["consolidated_ris_path"])
+            ris_text = ris_path.read_text(encoding="utf-8")
+            self.assertEqual(1, ris_text.count("TY  - JOUR"))
+            self.assertIn("Paper A", ris_text)
+            self.assertNotIn("Paper B", ris_text)
+
+    def test_promote_skips_ris_when_write_ris_false(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            run_id = "2026-07-03T180322"
+            candidates_path = workspace / "09_frontier_push" / "runs" / run_id / "candidates.jsonl"
+            write_candidates_jsonl(
+                candidates_path,
+                [make_candidate("fp_only", "10.1111/only", "Only Paper")],
+            )
+
+            result = promote_frontier_candidates(workspace, run_id, ["fp_only"], write_ris=False)
+
+            # JSON is still written
+            self.assertTrue(Path(result["output_path"]).exists())
+            # RIS file is NOT written
+            self.assertIsNone(result["consolidated_ris_path"])
+            ris_dir = workspace / "02_corpus" / "zotero_ris"
+            if ris_dir.exists():
+                self.assertEqual(0, len(list(ris_dir.glob("*.ris"))))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -43,11 +43,115 @@ def _candidate_to_raw_search_paper(candidate: FrontierCandidate) -> dict[str, An
     }
 
 
+def _author_to_ris(full_name: str) -> str:
+    """Convert 'First Middle Last' -> 'Last, First Middle' for RIS AU field."""
+    parts = str(full_name or "").strip().split()
+    if len(parts) <= 1:
+        return str(full_name or "")
+    return f"{parts[-1]}, {' '.join(parts[:-1])}"
+
+
+def _strip_doi_url(doi_url: str) -> str:
+    text = str(doi_url or "")
+    for prefix in ("https://doi.org/", "http://doi.org/", "doi.org/"):
+        if text.startswith(prefix):
+            return text[len(prefix):]
+    return text
+
+
+def _ris_collapse_whitespace(text: str) -> str:
+    """RIS values must be single-line; collapse any whitespace to single spaces."""
+    return re.sub(r"\s+", " ", str(text or "")).strip()
+
+
+def _derive_keywords(candidate: FrontierCandidate) -> list[str]:
+    """Build a small keyword set from the candidate's match_reasons and source.
+
+    We pull the matched phrase/term out of each match_reason (stripping the
+    'exact phrase: ' / 'near phrase: ' / 'related term: ' prefixes) and add
+    a couple of structural tags. This avoids hard-coding per-candidate_id
+    keyword dictionaries and stays accurate to what the candidate actually
+    matched on.
+    """
+    keywords: list[str] = []
+    seen: set[str] = set()
+    for reason in candidate.match_reasons:
+        for prefix in ("exact phrase: ", "near phrase: ", "related term: "):
+            if reason.startswith(prefix):
+                phrase = reason[len(prefix):].strip()
+                if phrase and phrase.lower() not in seen:
+                    keywords.append(phrase)
+                    seen.add(phrase.lower())
+                break
+    if candidate.source_id:
+        keywords.append(candidate.source_id)
+    if candidate.source_tier:
+        keywords.append(f"tier {candidate.source_tier}")
+    if candidate.push_bucket:
+        keywords.append(candidate.push_bucket)
+    return keywords
+
+
+def _build_ris_record(candidate: FrontierCandidate) -> str:
+    """Render one FrontierCandidate as a single RIS record (ends with ER -)."""
+    title = _ris_collapse_whitespace(candidate.title)
+    venue = _ris_collapse_whitespace(candidate.venue)
+    year = candidate.year if candidate.year is not None else ""
+    doi_url = candidate.doi or ""
+    doi = _strip_doi_url(doi_url)
+    landing = candidate.url or doi_url
+    abstract = _ris_collapse_whitespace(candidate.abstract)
+    authors = candidate.authors or []
+    keywords = _derive_keywords(candidate)
+
+    lines: list[str] = ["TY  - JOUR"]
+    if title:
+        lines.append(f"TI  - {title}")
+    if venue:
+        lines.append(f"T2  - {venue}")
+    for author in authors:
+        if author:
+            lines.append(f"AU  - {_author_to_ris(author)}")
+    if year:
+        lines.append(f"PY  - {year}")
+    if doi:
+        lines.append(f"DO  - {doi}")
+    if landing:
+        lines.append(f"UR  - {_ris_collapse_whitespace(landing)}")
+    if abstract:
+        lines.append(f"AB  - {abstract}")
+    for kw in keywords:
+        lines.append(f"KW  - {_ris_collapse_whitespace(kw)}")
+    note = (
+        f"Candidate source: frontier push run, candidate_id={candidate.candidate_id}; "
+        f"source_id={candidate.source_id}; source_tier={candidate.source_tier}; "
+        f"match_score={candidate.match_score}; bucket={candidate.push_bucket}."
+    )
+    lines.append(f"N1  - {note}")
+    lines.append("ER  -")
+    return "\n".join(lines)
+
+
+def write_consolidated_ris(workspace: Path, run_id: str, candidates: list[FrontierCandidate]) -> Path:
+    """Write a single multi-record RIS file under 02_corpus/zotero_ris/.
+
+    One record per promoted candidate; records are separated by a blank line
+    per RIS convention. Overwrites any existing file at the same path so a
+    re-promotion against the same run_id produces a fresh consolidated RIS.
+    """
+    target = workspace / "02_corpus" / "zotero_ris" / f"frontier_push_{_safe_stem(run_id)}.ris"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    body = "\n\n".join(_build_ris_record(c) for c in candidates) + "\n"
+    target.write_text(body, encoding="utf-8")
+    return target
+
+
 def promote_frontier_candidates(
     workspace: Path,
     run_id: str,
     candidate_ids: list[str],
     output_path: Path | None = None,
+    write_ris: bool = True,
 ) -> dict[str, Any]:
     candidates_path = workspace / "09_frontier_push" / "runs" / run_id / "candidates.jsonl"
     candidates = load_candidates_jsonl(candidates_path)
@@ -70,11 +174,15 @@ def promote_frontier_candidates(
     }
     raw_output.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    ris_path: Path | None = None
+    if write_ris:
+        ris_path = write_consolidated_ris(workspace, run_id, selected)
+
     return {
         "workspace": str(workspace),
         "run_id": run_id,
         "selected_count": len(selected),
         "output_path": str(raw_output),
+        "consolidated_ris_path": str(ris_path) if ris_path else None,
         "master_corpus_touched": False,
     }
-

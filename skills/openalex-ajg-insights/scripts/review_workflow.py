@@ -1183,10 +1183,15 @@ def collect_frontier_sources(
     )
 
 
-def promote_frontier_candidates(workspace: Path, run_id: str, candidate_ids: list[str]) -> dict[str, Any]:
+def promote_frontier_candidates(
+    workspace: Path,
+    run_id: str,
+    candidate_ids: list[str],
+    write_ris: bool = True,
+) -> dict[str, Any]:
     from frontier_push.promotion import promote_frontier_candidates as promote
 
-    return promote(workspace, run_id, candidate_ids)
+    return promote(workspace, run_id, candidate_ids, write_ris=write_ris)
 
 
 def _find_paper_for_decomposition(workspace: Path, paper_key: str) -> dict[str, Any]:
@@ -1296,6 +1301,11 @@ def parse_args() -> argparse.Namespace:
     promote_frontier_cmd = subparsers.add_parser("promote-frontier-candidates", help="Promote selected frontier candidates into raw search JSON.")
     promote_frontier_cmd.add_argument("--run-id", required=True)
     promote_frontier_cmd.add_argument("--candidate-ids", nargs="+", required=True)
+    promote_frontier_cmd.add_argument(
+        "--no-write-ris",
+        action="store_true",
+        help="Skip writing the consolidated Zotero RIS file alongside the promoted JSON. Default: write RIS.",
+    )
 
     decompose_cmd = subparsers.add_parser("decompose-paper", help="Create a two-stage paper decomposition prompt or LLM draft.")
     decompose_cmd.add_argument("--paper-key", required=True)
@@ -1357,7 +1367,12 @@ def main() -> int:
                     year_end=args.year_end,
                 )
             elif args.command == "promote-frontier-candidates":
-                payload = promote_frontier_candidates(workspace, args.run_id, args.candidate_ids)
+                payload = promote_frontier_candidates(
+                    workspace,
+                    args.run_id,
+                    args.candidate_ids,
+                    write_ris=not args.no_write_ris,
+                )
             elif args.command == "decompose-paper":
                 payload = decompose_frontier_paper(workspace, args.paper_key, args.llm_mode, args.excerpt_file)
             else:
