@@ -33,6 +33,15 @@ Keep the workflow file-based and transparent, but let the controller decide whic
 4. If the user explicitly wants to revise the framework, run `reopen-plan` and return to the planner.
 5. Keep all handoffs grounded in workspace files rather than ephemeral chat memory.
 
+`status` is a read-only diagnostic command. It reports the current stage,
+completed milestones, missing inputs, human blockers, and recommended next
+action. For frontier-push work, it diagnoses TA-only source coverage, mixed
+profile or year-window source records, explicit input paths for
+`run-frontier-push`, candidate-triage blockers, and promotion/RIS readiness.
+These are routing recommendations, not hard CLI blocks. `status` must not
+promote candidates, edit screening tables, prepare manifests, approve plans,
+or start drafting.
+
 ## What To Ask The User
 
 When a draft plan is ready, ask directly whether the framework should be frozen.
