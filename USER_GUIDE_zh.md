@@ -594,6 +594,8 @@ MINERU_API_KEY=your-token-from-mineru
 
 前沿文献推送是工作区内的可选子流程，固定写入 `<review-workspace>\09_frontier_push\`，不会替代现有的检索、语料库、全文、计划和写作流程。候选文献先进入推送报告，只有你确认后，才通过 promotion 写入 `01_search\raw_json\`，再由原来的 `merge-search-results` 进入正式 corpus。
 
+Tier A 期刊采集只启用 `abs_ajg_4star`、`ft50`、`utd24`，并通过主流程同一份 AJG CSV/OpenAlex 能力解析 ISSN；不会把 AJG 3+ 当作兜底来源。采集可以多轮执行：按来源、profile 关键词和 ISSN 分块抓取，先写入 `09_frontier_push\source_records\`，再由推送报告消费。
+
 ```powershell
 python "$REVIEW_GEN\skills\openalex-ajg-insights\scripts\review_workflow.py" `
   --workspace "$WORKSPACE" `
@@ -606,12 +608,20 @@ python "$REVIEW_GEN\skills\openalex-ajg-insights\scripts\review_workflow.py" `
 
 python "$REVIEW_GEN\skills\openalex-ajg-insights\scripts\review_workflow.py" `
   --workspace "$WORKSPACE" `
+  collect-frontier-sources `
+  --profile firm_asset_pricing_determinants `
+  --source-ids abs_ajg_4star,ft50,utd24 `
+  --year-start 2025 `
+  --year-end 2026
+
+python "$REVIEW_GEN\skills\openalex-ajg-insights\scripts\review_workflow.py" `
+  --workspace "$WORKSPACE" `
   run-frontier-push `
   --profile firm_asset_pricing_determinants `
   --source-tiers A,C `
-  --input "$WORKSPACE\09_frontier_push\source_records\records.json"
+  --year-start 2025 `
+  --year-end 2026
 ```
-
 ### 用自然语言指挥前沿推送
 
 日常使用时不需要记住上面的 CLI 参数。你只需要记住工作流顺序，并用自然语言要求 Codex 执行。推荐顺序如下：

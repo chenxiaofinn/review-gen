@@ -1,4 +1,4 @@
-﻿# review-gen
+# review-gen
 
 `review-gen` 是面向管理学、战略、创业、创新与组织研究的长期文献综述工作流工具包。
 
@@ -257,6 +257,40 @@ review-gen/
     ├── management-review-writer/
     └── review-orchestrator/
 ```
+
+
+## 可选：前沿文献推送工作流
+
+前沿文献推送是工作区内的可选子流程，写入 `<review-workspace>\09_frontier_push\`，不会替代现有检索、语料库、全文、计划和写作流程。Tier A 期刊采集只启用 `abs_ajg_4star`、`ft50`、`utd24`，并通过主流程同一份 AJG CSV/OpenAlex 能力解析 ISSN；不会使用 AJG 3+ 作为兜底来源。
+
+```bash
+python <review-gen-home>/skills/openalex-ajg-insights/scripts/review_workflow.py \
+  --workspace <review-workspace> \
+  init-frontier-push
+
+python <review-gen-home>/skills/openalex-ajg-insights/scripts/review_workflow.py \
+  --workspace <review-workspace> \
+  draft-interest-profile \
+  --intent "检索企业资产定价影响因素的相关文献"
+
+python <review-gen-home>/skills/openalex-ajg-insights/scripts/review_workflow.py \
+  --workspace <review-workspace> \
+  collect-frontier-sources \
+  --profile firm_asset_pricing_determinants \
+  --source-ids abs_ajg_4star,ft50,utd24 \
+  --year-start 2025 \
+  --year-end 2026
+
+python <review-gen-home>/skills/openalex-ajg-insights/scripts/review_workflow.py \
+  --workspace <review-workspace> \
+  run-frontier-push \
+  --profile firm_asset_pricing_determinants \
+  --source-tiers A,C \
+  --year-start 2025 \
+  --year-end 2026
+```
+
+候选文献先进入推送报告；只有你确认后，才通过 promotion 写入 `01_search/raw_json/`，再由原有 `merge-search-results` 进入正式 corpus。
 
 ## License
 

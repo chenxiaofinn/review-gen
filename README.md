@@ -267,6 +267,8 @@ MIT. See [LICENSE](LICENSE).
 
 `review-gen` can also maintain a workspace-local frontier push subflow under `09_frontier_push/`. This is optional and does not replace the normal search, corpus, manifest, planner, or writer workflow.
 
+Tier A frontier collection now resolves only AJG 4*, FT50, and UTD24 journal pools through the bundled AJG CSV/OpenAlex bridge. Collection writes reviewable source-record JSON first; push reports are generated from those records and remain outside the corpus until selected candidates are promoted.
+
 ```bash
 python skills/openalex-ajg-insights/scripts/review_workflow.py \
   --workspace <review-workspace> \
@@ -275,14 +277,23 @@ python skills/openalex-ajg-insights/scripts/review_workflow.py \
 python skills/openalex-ajg-insights/scripts/review_workflow.py \
   --workspace <review-workspace> \
   draft-interest-profile \
-  --intent "检索企业资产定价影响因素的相关文献"
+  --intent "企业资产定价影响因素"
+
+python skills/openalex-ajg-insights/scripts/review_workflow.py \
+  --workspace <review-workspace> \
+  collect-frontier-sources \
+  --profile firm_asset_pricing_determinants \
+  --source-ids abs_ajg_4star,ft50,utd24 \
+  --year-start 2025 \
+  --year-end 2026
 
 python skills/openalex-ajg-insights/scripts/review_workflow.py \
   --workspace <review-workspace> \
   run-frontier-push \
   --profile firm_asset_pricing_determinants \
   --source-tiers A,C \
-  --input <records.json>
+  --year-start 2025 \
+  --year-end 2026
 ```
 
 Candidate papers are written to `09_frontier_push/runs/<run-id>/candidates.jsonl` and reports to `09_frontier_push/reports/`. They are not added to `02_corpus/master_corpus.jsonl` until selected candidates are promoted into `01_search/raw_json/` and the normal merge step is run. LLM features use OpenAI-compatible `OPENAI_API_KEY`, `OPENAI_BASE_URL`, and `OPENAI_MODEL`; without a key the workflow writes a complete prompt fallback.
