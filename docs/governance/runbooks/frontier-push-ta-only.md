@@ -31,7 +31,7 @@ python <review-gen-home>/skills/openalex-ajg-insights/scripts/review_workflow.py
   --workspace <review-workspace> \
   run-frontier-push \
   --profile <profile-id> \
-  --source-tiers A \
+  --ta-only \
   --year-start <start-year> \
   --year-end <end-year> \
   --input <abs_ajg_4star-current-window.json> \
@@ -39,8 +39,11 @@ python <review-gen-home>/skills/openalex-ajg-insights/scripts/review_workflow.py
           <utd24-current-window.json>
 ```
 
-Do not rely on default `source_records/*.json` discovery when historical
-payloads exist. Mixed year windows can silently contaminate a frontier report.
+Use `--ta-only` for the canonical TA-only path. In this mode the command
+rejects missing explicit inputs, missing year windows, non-TA payloads, missing
+TA sources, profile mismatches, and payload year-window mismatches before writing
+candidate or report artifacts. Flexible legacy runs without `--ta-only` still
+support broader source-tier choices and default source-record discovery.
 
 ## Defaults And Boundaries
 
@@ -70,7 +73,7 @@ After the run, check:
 
 - `09_frontier_push/source_records/` contains exactly the current TA payloads
   for the intended year window.
-- `run-frontier-push` used `--source-tiers A` and explicit `--input` paths.
+- `run-frontier-push` used `--ta-only` and explicit `--input` paths.
 - `runs/<run-id>/candidates.jsonl` exists and contains only Tier A candidates.
 - The report says candidates are advisory and not yet added to the corpus.
 - `master_corpus.jsonl`, screening tables, manifests, evidence tables, and

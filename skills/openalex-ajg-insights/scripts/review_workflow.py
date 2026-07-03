@@ -23,6 +23,7 @@ REVIEW_GEN_ROOT = Path(__file__).resolve().parents[3]
 GLOBAL_ENV_PATH = REVIEW_GEN_ROOT / "config" / ".env.local"
 PLAN_DIR_NAME = "07_plan"
 LEGACY_PLAN_DIR_NAME = "07_notes"
+TA_ONLY_SOURCE_IDS = {"abs_ajg_4star", "ft50", "utd24"}
 
 WORKSPACE_DIRS = [
     "01_search/raw_json",
@@ -1031,6 +1032,53 @@ def _load_frontier_records(input_paths: list[str]) -> dict[str, list[dict[str, A
     return records_by_source
 
 
+def validate_ta_only_frontier_inputs(
+    profile_id: str,
+    source_tiers: list[str],
+    input_paths: list[str],
+    year_start: int | None,
+    year_end: int | None,
+) -> None:
+    from frontier_push.source_collection import canonical_source_id
+
+    if not input_paths:
+        raise ValueError("TA-only run-frontier-push requires explicit --input paths from the current collect-frontier-sources run.")
+    if year_start is None or year_end is None:
+        raise ValueError("TA-only run-frontier-push requires --year-start and --year-end.")
+    normalized_tiers = {str(tier).strip() for tier in source_tiers if str(tier).strip()}
+    if normalized_tiers != {"A"}:
+        raise ValueError("TA-only run-frontier-push requires --source-tiers A.")
+
+    seen_sources: set[str] = set()
+    for raw_path in input_paths:
+        path = Path(raw_path)
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+        if not isinstance(data, dict):
+            raise ValueError(f"TA-only input must be a source payload object with source_id/profile/year metadata: {path}")
+        source_id = canonical_source_id(str(data.get("source_id") or data.get("id") or path.stem))
+        if source_id in seen_sources:
+            raise ValueError(f"Duplicate TA source payload for {source_id}: {path}.")
+        seen_sources.add(source_id)
+        if source_id not in TA_ONLY_SOURCE_IDS:
+            raise ValueError(f"Unexpected TA-only source_id {source_id!r}; expected only abs_ajg_4star, ft50, utd24.")
+        payload_profile = data.get("profile_id")
+        if payload_profile and payload_profile != profile_id:
+            raise ValueError(f"TA-only input profile mismatch for {path}: expected {profile_id}, found {payload_profile}.")
+        payload_start = data.get("year_start")
+        payload_end = data.get("year_end")
+        if payload_start is not None and payload_start != year_start:
+            raise ValueError(f"TA-only input year window mismatch for {path}: expected {year_start}-{year_end}, found {payload_start}-{payload_end}.")
+        if payload_end is not None and payload_end != year_end:
+            raise ValueError(f"TA-only input year window mismatch for {path}: expected {year_start}-{year_end}, found {payload_start}-{payload_end}.")
+
+    missing_sources = sorted(TA_ONLY_SOURCE_IDS - seen_sources)
+    if missing_sources:
+        raise ValueError(f"Missing TA source payload(s): {', '.join(missing_sources)}.")
+    extra_sources = sorted(seen_sources - TA_ONLY_SOURCE_IDS)
+    if extra_sources:
+        raise ValueError(f"Unexpected TA-only source payload(s): {', '.join(extra_sources)}.")
+
+
 def run_frontier_push(
     workspace: Path,
     profile_id: str,
@@ -1039,11 +1087,14 @@ def run_frontier_push(
     run_id: str | None = None,
     year_start: int | None = None,
     year_end: int | None = None,
+    ta_only: bool = False,
 ) -> dict[str, Any]:
     from frontier_push.profiles import load_interest_profile, profile_path
     from frontier_push.runner import run_frontier_push_from_records
 
     init_frontier_push(workspace)
+    if ta_only:
+        validate_ta_only_frontier_inputs(profile_id, source_tiers, input_paths, year_start, year_end)
     if not input_paths:
         default_dir = workspace / "09_frontier_push" / "source_records"
         input_paths = [str(path) for path in sorted(default_dir.glob("*.json"))]
@@ -1284,11 +1335,12 @@ def parse_args() -> argparse.Namespace:
 
     run_frontier_cmd = subparsers.add_parser("run-frontier-push", help="Generate frontier candidates and a push report.")
     run_frontier_cmd.add_argument("--profile", required=True, help="InterestProfile id.")
-    run_frontier_cmd.add_argument("--source-tiers", default="A,C", help="Comma-separated source tiers, for example A,C.")
+    run_frontier_cmd.add_argument("--source-tiers", help="Comma-separated source tiers, for example A,C. Defaults to A,C, or A with --ta-only.")
     run_frontier_cmd.add_argument("--input", nargs="*", default=[], help="Frontier source JSON files. Defaults to 09_frontier_push/source_records/*.json.")
     run_frontier_cmd.add_argument("--run-id", help="Optional stable run id for repeatable output paths.")
     run_frontier_cmd.add_argument("--year-start", type=int, help="Optional inclusive start year for source records.")
     run_frontier_cmd.add_argument("--year-end", type=int, help="Optional inclusive end year for source records.")
+    run_frontier_cmd.add_argument("--ta-only", action="store_true", help="Enforce the canonical TA-only frontier run contract: explicit inputs, source tier A, all three TA sources, and explicit year window.")
 
     collect_frontier_cmd = subparsers.add_parser("collect-frontier-sources", help="Collect Tier A frontier source records into source_records.")
     collect_frontier_cmd.add_argument("--profile", required=True, help="InterestProfile id.")
@@ -1356,7 +1408,8 @@ def main() -> int:
                     max_queries=args.max_queries,
                 )
             elif args.command == "run-frontier-push":
-                tiers = [tier.strip() for tier in args.source_tiers.split(",") if tier.strip()]
+                source_tiers_arg = args.source_tiers if args.source_tiers is not None else ("A" if args.ta_only else "A,C")
+                tiers = [tier.strip() for tier in source_tiers_arg.split(",") if tier.strip()]
                 payload = run_frontier_push(
                     workspace,
                     args.profile,
@@ -1365,6 +1418,7 @@ def main() -> int:
                     args.run_id,
                     year_start=args.year_start,
                     year_end=args.year_end,
+                    ta_only=args.ta_only,
                 )
             elif args.command == "promote-frontier-candidates":
                 payload = promote_frontier_candidates(
