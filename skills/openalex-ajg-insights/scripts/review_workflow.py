@@ -955,6 +955,7 @@ def emit(payload: dict[str, Any], output_format: str) -> None:
 
 def init_frontier_push(workspace: Path) -> dict[str, Any]:
     from frontier_push.sources import write_default_source_catalog
+    from frontier_push.source_collection import validate_source_payload
 
     root = workspace / "09_frontier_push"
     for rel in ["profiles", "runs", "reports", "deep_reads", "source_records"]:
@@ -964,6 +965,17 @@ def init_frontier_push(workspace: Path) -> dict[str, Any]:
     if not sources_path.exists():
         write_default_source_catalog(sources_path)
 
+    warnings: list[str] = []
+    records_dir = root / "source_records"
+    if records_dir.exists():
+        for record_path in sorted(records_dir.glob("*.json")):
+            try:
+                payload = json.loads(record_path.read_text(encoding="utf-8-sig"))
+            except json.JSONDecodeError as exc:
+                warnings.append(f"{record_path}: invalid JSON ({exc})")
+                continue
+            warnings.extend(validate_source_payload(payload, record_path))
+
     return {
         "workspace": str(workspace),
         "frontier_root": str(root),
@@ -972,7 +984,8 @@ def init_frontier_push(workspace: Path) -> dict[str, Any]:
         "runs_dir": str(root / "runs"),
         "reports_dir": str(root / "reports"),
         "deep_reads_dir": str(root / "deep_reads"),
-        "source_records_dir": str(root / "source_records"),
+        "source_records_dir": str(records_dir),
+        "source_record_warnings": warnings,
     }
 
 
@@ -1321,9 +1334,28 @@ def main() -> int:
                 payload = init_frontier_push(workspace)
             elif args.command == "draft-interest-profile":
                 payload = draft_interest_profile(workspace, args.intent, args.llm_mode)
+            elif args.command == "collect-frontier-sources":
+                source_ids = [item.strip() for item in args.source_ids.split(",") if item.strip()]
+                payload = collect_frontier_sources(
+                    workspace,
+                    args.profile,
+                    source_ids,
+                    args.year_start,
+                    args.year_end,
+                    limit_per_query=args.limit_per_query,
+                    max_queries=args.max_queries,
+                )
             elif args.command == "run-frontier-push":
                 tiers = [tier.strip() for tier in args.source_tiers.split(",") if tier.strip()]
-                payload = run_frontier_push(workspace, args.profile, tiers, args.input, args.run_id)
+                payload = run_frontier_push(
+                    workspace,
+                    args.profile,
+                    tiers,
+                    args.input,
+                    args.run_id,
+                    year_start=args.year_start,
+                    year_end=args.year_end,
+                )
             elif args.command == "promote-frontier-candidates":
                 payload = promote_frontier_candidates(workspace, args.run_id, args.candidate_ids)
             elif args.command == "decompose-paper":

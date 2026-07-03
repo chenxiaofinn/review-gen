@@ -273,6 +273,37 @@ def deduplicate_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return deduped
 
 
+REQUIRED_SOURCE_PAYLOAD_FIELDS = (
+    "source_id",
+    "source_tier",
+    "source_type",
+    "profile_id",
+    "year_start",
+    "year_end",
+    "records",
+)
+
+
+def validate_source_payload(payload: Any, path: Path | None = None) -> list[str]:
+    """Return a list of human-readable warnings for a source-record payload.
+
+    The validator never raises. It is designed to flag legacy or
+    hand-edited files that lack the metadata fields required by ADR-0004.
+    """
+    warnings: list[str] = []
+    label = str(path) if path is not None else "<payload>"
+    if not isinstance(payload, dict):
+        return [f"{label}: top-level value must be a JSON object"]
+    for field in REQUIRED_SOURCE_PAYLOAD_FIELDS:
+        if field not in payload:
+            warnings.append(f"{label}: missing required field '{field}'")
+    if isinstance(payload.get("records"), list) and len(payload["records"]) > 0:
+        sample = payload["records"][0]
+        if not isinstance(sample, dict):
+            warnings.append(f"{label}: first record must be a JSON object")
+    return warnings
+
+
 def build_profile_queries(profile: InterestProfile, max_queries: int | None = None) -> list[str]:
     queries: list[str] = []
     seen: set[str] = set()
