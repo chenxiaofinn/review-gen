@@ -148,6 +148,39 @@ class InterestProfileTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "audit is stale"):
                 validate_profile_audit_path(profile_path)
 
+    def test_shared_audit_gate_rejects_single_exact_alias_per_group(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            profile_path = Path(tmp) / "a_share_asset_pricing.yml"
+            profile = InterestProfile.from_dict(
+                {
+                    "id": "a_share_asset_pricing",
+                    "name": "A-share asset pricing",
+                    "directionality": "descriptive",
+                    "target_construct": "A-share market and asset pricing",
+                    "required_concept_groups": {
+                        "market": ["A-share", "Chinese stock market"],
+                        "pricing": ["asset pricing", "stock returns"],
+                    },
+                    "exact_phrases": ["A-share", "asset pricing"],
+                    "near_phrases": ["Chinese stock market", "stock returns"],
+                    "related_terms": [],
+                    "exclude_keywords": [],
+                    "jel_codes": ["G12"],
+                    "natural_language": "Track A-share asset pricing.",
+                }
+            )
+            write_interest_profile(profile_path, profile)
+            profile_path.with_suffix(".audit.yml").write_text(
+                "audit:\n  status: pass\n",
+                encoding="utf-8",
+            )
+
+            issues = descriptive_profile_query_plan_issues(profile)
+            self.assertTrue(any("'market'" in issue and "exact aliases" in issue for issue in issues))
+            self.assertTrue(any("'pricing'" in issue and "exact aliases" in issue for issue in issues))
+            with self.assertRaisesRegex(ValueError, "fewer than two exact aliases"):
+                validate_profile_audit_path(profile_path)
+
     def test_shared_audit_gate_rejects_ungrouped_descriptive_query_terms(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             profile_path = Path(tmp) / "a_share_asset_pricing.yml"
@@ -202,11 +235,11 @@ class InterestProfileLlmTests(unittest.TestCase):
                 "directionality": "descriptive",
                 "target_construct": "A-share market and asset pricing",
                 "required_concept_groups": {
-                    "market": ["A-share", "Chinese stock market"],
-                    "pricing": ["asset pricing", "stock returns"],
+                    "market": ["A-share", "Chinese stock market", "Chinese equity market"],
+                    "pricing": ["asset pricing", "asset price", "stock returns"],
                 },
-                "exact_phrases": ["A-share", "asset pricing"],
-                "near_phrases": ["Chinese stock market", "stock returns"],
+                "exact_phrases": ["A-share", "Chinese stock market", "asset pricing", "asset price"],
+                "near_phrases": ["Chinese equity market", "stock returns"],
                 "related_terms": ["factor models"],
                 "exclude_keywords": [],
                 "jel_codes": ["G12"],
@@ -215,13 +248,16 @@ class InterestProfileLlmTests(unittest.TestCase):
         )
         audit_prompt = build_profile_audit_prompt("A股市场与资产定价", profile)
 
+        self.assertEqual([], descriptive_profile_query_plan_issues(profile))
         self.assertIn("concise, discriminative concept anchors", draft_prompt)
         self.assertIn("2-5 established aliases", draft_prompt)
-        self.assertIn("multiple equally precise established aliases", draft_prompt)
+        self.assertIn("at least two precise established exact aliases", draft_prompt)
         self.assertIn("every exact_phrases and near_phrases", draft_prompt)
         self.assertIn("Compiled query rounds: 2", audit_prompt)
         self.assertIn("required_concept_groups: {}", audit_prompt)
         self.assertIn("one over-specific long phrase", audit_prompt)
+        self.assertIn("fewer than two exact aliases", audit_prompt)
+        self.assertIn("shorter established lexical anchor", audit_prompt)
         self.assertIn("ungrouped query terms", audit_prompt)
         self.assertIn("Compiled query error: none", audit_prompt)
 

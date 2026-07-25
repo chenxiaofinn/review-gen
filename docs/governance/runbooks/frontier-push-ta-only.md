@@ -58,7 +58,10 @@ python <review-gen-home>/skills/openalex-ajg-insights/scripts/review_workflow.py
 
 For descriptive profiles, round 1 uses exact phrases in every required concept
 group. Round 2 uses exact plus near phrases in every group. Both use OR within
-groups and AND between groups. Every exact or near query term must belong to a
+groups and AND between groups. Audit requires at least two established exact
+aliases in every group so round 1 actually contains a reviewable OR expression;
+the user may explicitly reject that recommendation when a concept genuinely has
+only one safe exact anchor. Every exact or near query term must belong to a
 required concept group; otherwise audit, preview, collection, bridge, and MCP
 profile execution stop instead of silently ignoring the term. Add
 `max_queries: 1` or `max_queries: 2` to

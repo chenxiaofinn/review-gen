@@ -191,6 +191,54 @@ class FrontierPushCliTests(unittest.TestCase):
                 profile_audit["audit"]["suggested_changes"],
             )
 
+    def test_descriptive_single_exact_alias_per_group_overrides_pass_audit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            drafted = {
+                "status": "drafted",
+                "profile": {
+                    "id": "a_share_asset_pricing",
+                    "name": "A-share asset pricing",
+                    "directionality": "descriptive",
+                    "target_construct": "A-share market and asset pricing",
+                    "required_concept_groups": {
+                        "market": ["A-share", "Chinese stock market"],
+                        "pricing": ["asset pricing", "stock returns"],
+                    },
+                    "exact_phrases": ["A-share", "asset pricing"],
+                    "near_phrases": ["Chinese stock market", "stock returns"],
+                    "related_terms": [],
+                    "exclude_keywords": [],
+                    "jel_codes": ["G12"],
+                    "natural_language": "Track A-share asset pricing.",
+                },
+            }
+            audit = {
+                "status": "audited",
+                "audit": {
+                    "status": "pass",
+                    "suggested_changes": {},
+                    "notes": [],
+                },
+            }
+            with patch("frontier_push.llm.draft_interest_profile", return_value=drafted), patch(
+                "frontier_push.llm.audit_interest_profile", return_value=audit
+            ):
+                result = review_workflow.draft_interest_profile(
+                    workspace,
+                    "A股市场与资产定价",
+                    "api",
+                    "descriptive",
+                )
+
+            profile_audit = result["profile_audit"]
+            self.assertEqual("needs_revision", profile_audit["audit"]["status"])
+            self.assertEqual("pending", profile_audit["user_decision"]["status"])
+            notes = " ".join(profile_audit["audit"]["notes"])
+            self.assertIn("fewer than two exact aliases", notes)
+            self.assertIn("'market'", notes)
+            self.assertIn("'pricing'", notes)
+
     def test_existing_pass_audit_is_stale_for_single_round_descriptive_profile(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)

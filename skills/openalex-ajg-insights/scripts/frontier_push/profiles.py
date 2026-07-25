@@ -199,6 +199,24 @@ def descriptive_profile_query_plan_issues(profile: InterestProfile) -> list[str]
         for terms in profile.required_concept_groups.values()
     ]
     issues: list[str] = []
+    exact_aliases_by_group: dict[str, list[str]] = {}
+    for group_name, terms in profile.required_concept_groups.items():
+        aliases: dict[str, str] = {}
+        for term in terms:
+            cleaned = _clean_string(term)
+            key = cleaned.lower()
+            if key in exact_terms:
+                aliases.setdefault(key, cleaned)
+        exact_aliases_by_group[group_name] = list(aliases.values())
+    for group_name, terms in exact_aliases_by_group.items():
+        if len(terms) >= 2:
+            continue
+        rendered_terms = ", ".join(terms) if terms else "none"
+        issues.append(
+            f"required concept group {group_name!r} has fewer than two exact aliases "
+            f"for round 1 (current: {rendered_terms}); add another established exact "
+            "alias or explicitly reject this recommendation"
+        )
     if expanded_groups == exact_groups:
         issues.append(
             "the profile compiles only one query round; add genuine near aliases "

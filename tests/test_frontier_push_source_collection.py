@@ -210,11 +210,11 @@ class FrontierSourceCollectionTests(unittest.TestCase):
             directionality="descriptive",
             target_construct="A-share market and asset pricing",
             required_concept_groups={
-                "market": ["A-share", "Chinese stock market"],
-                "pricing": ["asset pricing", "stock returns"],
+                "market": ["A-share", "Chinese stock market", "Chinese equity market"],
+                "pricing": ["asset pricing", "asset price", "stock returns"],
             },
-            exact_phrases=["A-share", "asset pricing"],
-            near_phrases=["Chinese stock market", "stock returns"],
+            exact_phrases=["A-share", "Chinese stock market", "asset pricing", "asset price"],
+            near_phrases=["Chinese equity market", "stock returns"],
             related_terms=["expected returns"],
             exclude_keywords=[],
             jel_codes=[],
@@ -225,9 +225,10 @@ class FrontierSourceCollectionTests(unittest.TestCase):
 
         self.assertEqual(
             [
-                '"A-share" AND "asset pricing"',
                 '("A-share" OR "Chinese stock market") AND '
-                '("asset pricing" OR "stock returns")',
+                '("asset pricing" OR "asset price")',
+                '("A-share" OR "Chinese stock market" OR "Chinese equity market") AND '
+                '("asset pricing" OR "asset price" OR "stock returns")',
             ],
             queries,
         )
