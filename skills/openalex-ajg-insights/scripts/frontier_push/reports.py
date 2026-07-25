@@ -12,7 +12,7 @@ def _candidate_line(candidate: FrontierCandidate) -> str:
     reasons = "; ".join(candidate.match_reasons[:4])
     return (
         f"- **{candidate.title}** ({year}). {authors}. "
-        f"*{candidate.venue}*. Tier {candidate.source_tier}, score {candidate.match_score}. "
+        f"*{candidate.venue}*. Tier {candidate.source_tier}, topic-match score {candidate.topic_match_score}. "
         f"{reasons}"
     ).strip()
 
@@ -48,8 +48,8 @@ def render_frontier_report(
             "## Review Notes",
             "",
             "Candidates in this report are not added to `master_corpus.jsonl` until the user promotes them.",
+            "The topic-match score is a mechanical ranking signal, not a paper-quality or inclusion decision.",
             "",
         ]
     )
     return "\n".join(lines)
-

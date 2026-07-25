@@ -15,9 +15,8 @@ DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
 
 
-def build_interest_profile_prompt(intent: str) -> str:
-    return "\n".join(
-        [
+def build_interest_profile_prompt(intent: str, requested_directionality: str | None = None) -> str:
+    lines = [
             "You are helping maintain a reviewable InterestProfile for frontier literature tracking.",
             "",
             "User intent, in Chinese:",
@@ -28,6 +27,11 @@ def build_interest_profile_prompt(intent: str) -> str:
             "name: Chinese topic name",
             "directionality: factors_of | effects_of | bidirectional | descriptive",
             "target_construct: the outcome or focal construct in English",
+            "required_concept_groups:  # required for descriptive; otherwise {}",
+            "  concept_a:",
+            "    - academically common term also listed in exact_phrases or near_phrases",
+            "  concept_b:",
+            "    - academically common term also listed in exact_phrases or near_phrases",
             "exact_phrases:",
             "  - phrase that should match closely",
             "near_phrases:",
@@ -44,13 +48,72 @@ def build_interest_profile_prompt(intent: str) -> str:
             "Directionality rule:",
             "- If the intent asks for factors/determinants/antecedents of X, set directionality to factors_of.",
             "- If the intent asks for effects/consequences/impact of X, set directionality to effects_of.",
+            "- If the intent asks for the relationship/association/correlation between two or more concepts, set directionality to descriptive.",
+            "- Do not infer a causal direction from neutral wording such as 'X and Y', 'X with Y', or Chinese 'X与Y'.",
+            "- Use bidirectional only when the user explicitly asks for mutual, reciprocal, or two-way causality.",
             "- Do not mix X-as-cause papers into factors_of unless the user clearly asks for both directions.",
             "",
             "Quality rules:",
+            "- Preserve the user's research intent exactly; do not substitute a different topic.",
             "- Prefer economics and finance terminology.",
+            "- Prefer established construct names, scale names, and noun-phrase terms used in article titles over literal translations.",
+            "- For relationship topics, cover both concept groups with academically common terms in exact_phrases or near_phrases.",
+            "- For descriptive relationship topics, provide at least two required_concept_groups; every group term must also appear in exact_phrases or near_phrases.",
+            "- For factors_of and effects_of topics, return required_concept_groups: {}.",
             "- Include precise phrases, near phrases, broader related terms, exclusions, and JEL codes.",
             "- Keep the YAML reviewable by a human.",
             "- Do not include Markdown fences, comments, or explanatory text outside YAML.",
+        ]
+    if requested_directionality:
+        lines.extend(
+            [
+                "",
+                f"The user explicitly selected directionality: {requested_directionality}",
+                "Return exactly that directionality value. Do not infer or substitute another one.",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def build_profile_audit_prompt(intent: str, profile: InterestProfile) -> str:
+    profile_yaml = yaml.safe_dump(profile.to_dict(), allow_unicode=True, sort_keys=False)
+    return "\n".join(
+        [
+            "Audit this literature-search InterestProfile against the user's original research intent.",
+            "",
+            "User intent:",
+            intent.strip(),
+            "",
+            "Current InterestProfile YAML:",
+            profile_yaml.strip(),
+            "",
+            "Return only YAML with these fields:",
+            "status: pass | needs_revision",
+            "missing_terms:",
+            "  - academically common term missing from the profile",
+            "overbroad_terms:",
+            "  - term likely to create weakly related results",
+            "coverage_assessment:",
+            "  core_concept: complete | partial | missing",
+            "  outcome_concept: complete | partial | missing",
+            "  directionality: acceptable | review",
+            "suggested_changes:",
+            "  exact_phrases: []",
+            "  near_phrases: []",
+            "  related_terms: []",
+            "  exclude_keywords: []",
+            "notes:",
+            "  - concise reason for the main findings",
+            "",
+            "Directionality audit rules:",
+            "- For relationship/association/correlation topics between two or more concepts, directionality should normally be descriptive.",
+            "- Flag directionality as review if neutral wording such as 'X and Y' or Chinese 'X与Y' was turned into factors_of or effects_of without explicit causal wording.",
+            "- Use bidirectional only when the intent explicitly asks for mutual, reciprocal, or two-way causality.",
+            "- For descriptive relationship topics, check whether both concept groups are covered by academically common terms.",
+            "- For descriptive profiles, verify that required_concept_groups separates the concepts and that each group has precise terms.",
+            "- Flag missing_terms when the profile uses only literal translations or adjective paraphrases but omits established construct names, scale names, or title-style noun phrases.",
+            "",
+            "Do not rewrite the whole profile. Do not silently assume that a broad mechanism term is a core topic term.",
         ]
     )
 
@@ -80,6 +143,32 @@ def _extract_yaml_mapping(text: str) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ValueError("LLM response did not contain an InterestProfile YAML mapping.")
     return data
+
+
+def audit_interest_profile(
+    intent: str,
+    profile: InterestProfile,
+    llm_mode: str = "auto",
+    env: dict[str, str] | None = None,
+    timeout: int = 60,
+) -> dict[str, Any]:
+    if llm_mode not in {"auto", "api", "prompt-only"}:
+        raise ValueError("llm_mode must be one of: auto, api, prompt-only.")
+
+    resolved_env = dict(os.environ if env is None else env)
+    prompt = build_profile_audit_prompt(intent, profile)
+    if llm_mode == "prompt-only":
+        return {"status": "unavailable", "reason": "prompt_only", "prompt": prompt}
+    if not resolved_env.get("OPENAI_API_KEY"):
+        return {"status": "unavailable", "reason": "missing_api_key", "prompt": prompt}
+
+    try:
+        content = _call_openai_compatible(prompt, resolved_env, timeout)
+        audit = _extract_yaml_mapping(content)
+    except (KeyError, ValueError, yaml.YAMLError, requests.RequestException, json.JSONDecodeError) as exc:
+        return {"status": "unavailable", "reason": "llm_error", "error": str(exc), "prompt": prompt}
+
+    return {"status": "audited", "reason": "api", "audit": audit, "prompt": prompt}
 
 
 def _call_openai_compatible(prompt: str, env: dict[str, str], timeout: int) -> str:
@@ -115,12 +204,13 @@ def draft_interest_profile(
     llm_mode: str = "auto",
     env: dict[str, str] | None = None,
     timeout: int = 60,
+    requested_directionality: str | None = None,
 ) -> dict[str, Any]:
     if llm_mode not in {"auto", "api", "prompt-only"}:
         raise ValueError("llm_mode must be one of: auto, api, prompt-only.")
 
     resolved_env = dict(os.environ if env is None else env)
-    prompt = build_interest_profile_prompt(intent)
+    prompt = build_interest_profile_prompt(intent, requested_directionality=requested_directionality)
 
     if llm_mode == "prompt-only":
         return _fallback(prompt, "prompt_only")
@@ -130,7 +220,12 @@ def draft_interest_profile(
     try:
         content = _call_openai_compatible(prompt, resolved_env, timeout)
         profile = InterestProfile.from_dict(_extract_yaml_mapping(content))
-    except (KeyError, ValueError, requests.RequestException, json.JSONDecodeError) as exc:
+        if requested_directionality and profile.directionality != requested_directionality:
+            raise ValueError(
+                "LLM directionality mismatch: "
+                f"user selected {requested_directionality}, model returned {profile.directionality}."
+            )
+    except (KeyError, ValueError, yaml.YAMLError, requests.RequestException, json.JSONDecodeError) as exc:
         return _fallback(prompt, "llm_error", str(exc))
 
     return {

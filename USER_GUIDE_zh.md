@@ -592,9 +592,22 @@ MINERU_API_KEY=your-token-from-mineru
 
 ## 可选：前沿文献推送工作流
 
+### 简化理解：三个用户阶段
+
+1. **生成并确认检索配置**：用自然语言说明主题，检查 LLM 生成的 profile、关键词、来源和年份。
+2. **查看并确认候选**：系统检索、去重和排序；人工标记 `include / exclude / hold`。
+3. **接入综述并处理全文**：只有确认的候选才进入 `01_search/raw_json/`，之后再进入 corpus 和全文处理。
+
+四个目录的关系是：
+
+- `09_frontier_push/`：候选区，不是正式 corpus。
+- `01_search/`：人工确认后的原始搜索结果。
+- `02_corpus/`：正式纳入综述的文献集合。
+- `04_fulltext/`：正式文献的 PDF、全文清单和全文处理结果。
+
 前沿文献推送是工作区内的可选子流程，固定写入 `<review-workspace>\09_frontier_push\`，不会替代现有的检索、语料库、全文、计划和写作流程。候选文献先进入推送报告，只有你确认后，才通过 promotion 写入 `01_search\raw_json\`，再由原来的 `merge-search-results` 进入正式 corpus。
 
-Tier A 期刊采集只启用 `abs_ajg_4star`、`ft50`、`utd24`，并通过主流程同一份 AJG CSV/OpenAlex 能力解析 ISSN；不会把 AJG 3+ 当作兜底来源。采集可以多轮执行：按来源、profile 关键词和 ISSN 分块抓取，先写入 `09_frontier_push\source_records\`，再由推送报告消费。
+正式工作区统一使用 `review_workflow.py`。`search-abs --profile` 是独立检索入口，MCP `profile_path` 是外部集成入口。新工作区默认只使用 ABS3；如需 ABS3★、ABS4、FT50 或 UTD24，人工修改 `frontier_settings.yml`，已有工作区不会被自动改写。
 
 ```powershell
 python "$REVIEW_GEN\skills\openalex-ajg-insights\scripts\review_workflow.py" `
@@ -604,7 +617,20 @@ python "$REVIEW_GEN\skills\openalex-ajg-insights\scripts\review_workflow.py" `
 python "$REVIEW_GEN\skills\openalex-ajg-insights\scripts\review_workflow.py" `
   --workspace "$WORKSPACE" `
   draft-interest-profile `
-  --intent "检索企业资产定价影响因素的相关文献"
+  --intent "检索企业资产定价影响因素的相关文献" `
+  --directionality factors_of
+
+# audit 为 needs_revision 时，Codex 会先汇报建议并等待确认；
+# user_decision.status 为 pending 时不能调用 OpenAlex，包括 source collection。
+
+python "$REVIEW_GEN\skills\openalex-ajg-insights\scripts\review_workflow.py" `
+  --workspace "$WORKSPACE" `
+  preview-frontier-queries `
+  --profile firm_asset_pricing_determinants
+
+# 该命令不联网。查看查询表达式和预计请求数后，
+# 在 09_frontier_push\frontier_settings.yml 中人工加入
+# max_queries: 1 或 max_queries: 2。
 
 python "$REVIEW_GEN\skills\openalex-ajg-insights\scripts\review_workflow.py" `
   --workspace "$WORKSPACE" `
@@ -618,10 +644,14 @@ python "$REVIEW_GEN\skills\openalex-ajg-insights\scripts\review_workflow.py" `
   --workspace "$WORKSPACE" `
   run-frontier-push `
   --profile firm_asset_pricing_determinants `
-  --source-tiers A,C `
   --year-start 2025 `
-  --year-end 2026
+  --year-end 2026 `
+  --input <abs_ajg_4star-current-window.json> <ft50-current-window.json> <utd24-current-window.json>
 ```
+
+这是按当前工作区 `frontier_settings.yml` 执行的严格检索。新工作区默认 ABS3；需要扩大来源时先显式修改设置。`run-frontier-push --expanded-search` 只用于有意放宽后续来源层级校验。
+
+前沿推送分三阶段：①确认 profile 并完成检索；②记录候选决定并 promotion；③merge 后准备全文 manifest、下载和转换 PDF，最后生成 frontier brief。只有最新 run 的 brief 已生成，才算本轮完整闭环。
 ### 用自然语言指挥前沿推送
 
 日常使用时不需要记住上面的 CLI 参数。你只需要记住工作流顺序，并用自然语言要求 Codex 执行。推荐顺序如下：
@@ -643,5 +673,26 @@ Codex 在执行这些自然语言指令时，应先确认当前工作区、profi
 这句话表示只执行初始化、profile 生成或复用、候选推送和报告审查；除非用户随后明确指定候选并要求 promotion，否则流程应停在报告阶段。
 
 `InterestProfile` 使用 YAML，保存在 `09_frontier_push\profiles\`。其中 `directionality` 用来区分“X 的影响因素”和“X 的影响/经济后果”；默认不要把 X 作为解释变量的论文混入“X 的影响因素”。
+
+### 自动下载开放 PDF
+
+人工确认候选并在 `review_decisions.jsonl` 中标记为 `include` 后，可以按候选 ID 尝试下载开放获取 PDF。未标记为 `include` 的候选会被命令拒绝：
+
+```powershell
+python "$REVIEW_GEN\skills\openalex-ajg-insights\scripts\review_workflow.py" `
+  --workspace "$WORKSPACE" `
+  download-frontier-pdfs `
+  --run-id <run-id>
+```
+
+默认处理所有标记为 `include` 的候选；只有需要单篇重试时才加上 `--candidate-ids`。
+
+默认查询 OpenAlex；加上 `--email <your-email>` 后才会查询 Unpaywall。下载成功的 PDF 进入 `04_fulltext\pdf_inbox\`。没有可验证 PDF 的候选会写入：
+
+```text
+09_frontier_push\runs\<run-id>\manual_download.tsv
+```
+
+这一步不会修改 `02_corpus\master_corpus.jsonl`，也不会操作 Zotero。人工下载的 PDF 直接放入 `04_fulltext\pdf_inbox\` 即可继续全文处理。
 
 LLM 功能使用 OpenAI 兼容配置：`OPENAI_API_KEY`、`OPENAI_BASE_URL`、`OPENAI_MODEL`。没有 key 时不会报错退出，而是写出可复制的 prompt fallback。论文拆解可用 `decompose-paper --paper-key <key>`，输出到 `09_frontier_push\deep_reads\`。

@@ -56,13 +56,14 @@ def bootstrap_repo(repo_root: Path) -> dict[str, Any]:
         sys.path.insert(0, src_root_str)
 
     from openalex_mcp.abs_loader import ABSCache
-    from openalex_mcp.client import OpenAlexClient
+    from openalex_mcp.client import OpenAlexClient, filter_works_by_issns
     from openalex_mcp.report_generator import generate_excel_report
     from openalex_mcp.utils import reconstruct_abstract, works_to_ris_block
 
     return {
         "ABSCache": ABSCache,
         "OpenAlexClient": OpenAlexClient,
+        "filter_works_by_issns": filter_works_by_issns,
         "generate_excel_report": generate_excel_report,
         "reconstruct_abstract": reconstruct_abstract,
         "works_to_ris_block": works_to_ris_block,
@@ -97,7 +98,14 @@ def parse_args() -> argparse.Namespace:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     search_abs = subparsers.add_parser("search-abs", help="Search ABS/AJG-ranked journals.")
-    search_abs.add_argument("--query", required=True, help="Search query.")
+    search_abs_input = search_abs.add_mutually_exclusive_group(required=True)
+    search_abs_input.add_argument("--query", help="Search query.")
+    search_abs_input.add_argument("--profile", help="Path to an InterestProfile YAML file.")
+    search_abs.add_argument(
+        "--max-queries",
+        type=int,
+        help="Required with --profile; maximum approved query rounds to execute.",
+    )
     search_abs.add_argument("--field", default="", help="ABS/AJG field code.")
     search_abs.add_argument(
         "--min-rank",
@@ -259,6 +267,18 @@ def with_frontier_source_metadata(payload: dict[str, Any]) -> dict[str, Any]:
     return enriched
 
 
+def source_issns_from_work(work: dict[str, Any]) -> list[str]:
+    source = ((work.get("primary_location") or {}).get("source") or {})
+    values = source.get("issn") or []
+    if isinstance(values, str):
+        values = [values]
+    issns = {str(value).strip() for value in values if str(value).strip()}
+    issn_l = str(source.get("issn_l") or "").strip()
+    if issn_l:
+        issns.add(issn_l)
+    return sorted(issns)
+
+
 def work_to_record(work: dict[str, Any], reconstruct_abstract: Any, query_tokens: list[str]) -> dict[str, Any]:
     primary_location = work.get("primary_location") or {}
     source = primary_location.get("source") or {}
@@ -274,6 +294,7 @@ def work_to_record(work: dict[str, Any], reconstruct_abstract: Any, query_tokens
         "landing_page_url": primary_location.get("landing_page_url") or "",
         "abstract": abstract,
         "abstract_word_count": len(abstract.split()) if abstract else 0,
+        "journal_issns": source_issns_from_work(work),
     }
     record["full_text_priority"] = estimate_full_text_need(record, query_tokens)
     return record
@@ -338,30 +359,60 @@ async def run_search_abs(args: argparse.Namespace, modules: dict[str, Any]) -> d
     if not issns:
         raise ValueError("No journals matched the requested field and rank.")
 
-    works, has_more = await client.search_works(
-        args.query,
+    profile_id = ""
+    if args.profile:
+        if args.max_queries is None:
+            raise ValueError("--max-queries is required when --profile is used.")
+        from frontier_push.profiles import load_interest_profile, validate_profile_audit_path
+        from frontier_push.source_collection import build_profile_queries
+
+        profile_file = Path(args.profile)
+        validate_profile_audit_path(profile_file)
+        profile = load_interest_profile(profile_file)
+        profile_id = profile.id
+        queries = build_profile_queries(profile, max_queries=args.max_queries)
+    else:
+        if args.max_queries is not None:
+            raise ValueError("--max-queries can only be used with --profile.")
+        queries = [args.query]
+
+    works, work_queries, query_diagnostics = await client.search_query_plan_for_issn_set(
+        queries,
         issns,
-        limit=normalize_limit(args.limit),
-        sort="publication_date:desc",
+        limit_per_chunk=normalize_limit(args.limit),
+        sort="relevance_score:desc",
+        year_start=args.year_start,
+        year_end=args.year_end,
     )
+    has_more = any(bool(query_item.get("has_more")) for query_item in query_diagnostics)
+    works = modules["filter_works_by_issns"](works, issns)
     filtered_works = filter_works_by_year(works, year_start=args.year_start, year_end=args.year_end)
-    query_tokens = tokenize_query(args.query)
-    papers = [
-        work_to_record(work, modules["reconstruct_abstract"], query_tokens)
-        for work in filtered_works
-    ]
+    papers = []
+    for work in filtered_works:
+        work_key = str(work.get("id") or work.get("doi") or work.get("title") or "").strip()
+        matched_queries = work_queries.get(work_key, [])
+        record = work_to_record(
+            work,
+            modules["reconstruct_abstract"],
+            tokenize_query(" ".join(matched_queries)),
+        )
+        record["source_query"] = " | ".join(matched_queries)
+        papers.append(record)
 
     exports = export_results(
         args.export_dir,
         filtered_works,
-        sanitize_file_stem(f"abs_{field or 'all'}_{args.min_rank}_{args.query}"),
+        sanitize_file_stem(f"abs_{field or 'all'}_{args.min_rank}_{profile_id or args.query}"),
         modules["generate_excel_report"],
         modules["works_to_ris_block"],
     )
 
     return with_frontier_source_metadata({
         "search_type": "abs",
-        "query": args.query,
+        "query": queries[0] if len(queries) == 1 else " | ".join(queries),
+        "queries": queries,
+        "query_diagnostics": query_diagnostics,
+        "profile_id": profile_id,
         "field": field or "",
         "min_rank": args.min_rank,
         "year_start": args.year_start,
@@ -369,6 +420,10 @@ async def run_search_abs(args: argparse.Namespace, modules: dict[str, Any]) -> d
         "limit": args.limit,
         "count": len(papers),
         "has_more": has_more,
+        "collection_status": "partial" if has_more else ("complete_zero_results" if not papers else "complete"),
+        "api_query_count": client.last_request_count,
+        "issn_chunk_count": (len(issns) + client.MAX_FILTER_ISSNS - 1) // client.MAX_FILTER_ISSNS,
+        "result_cap": normalize_limit(args.limit),
         "papers": papers,
         "exports": exports,
     })
@@ -384,6 +439,8 @@ async def run_search_journal(args: argparse.Namespace, modules: dict[str, Any]) 
         [journal_issn],
         limit=normalize_limit(args.limit),
         sort="publication_date:desc",
+        year_start=args.year_start,
+        year_end=args.year_end,
     )
     filtered_works = filter_works_by_year(works, year_start=args.year_start, year_end=args.year_end)
     query_tokens = tokenize_query(args.query)
@@ -539,6 +596,8 @@ def emit_output(payload: dict[str, Any], output_format: str, output_path: str | 
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(rendered, encoding="utf-8")
     else:
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8")
         sys.stdout.write(rendered)
         if not rendered.endswith("\n"):
             sys.stdout.write("\n")
@@ -563,7 +622,13 @@ def main() -> int:
     try:
         payload = asyncio.run(async_main(args))
     except Exception as exc:
-        error_payload = {"error": str(exc)}
+        error_payload = {
+            "error": str(exc),
+            "error_type": getattr(exc, "error_type", "api_error"),
+        }
+        retry_after = getattr(exc, "retry_after", None)
+        if retry_after is not None:
+            error_payload["retry_after"] = retry_after
         emit_output(error_payload, args.format, args.output_path)
         return 1
 

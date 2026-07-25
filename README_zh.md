@@ -261,7 +261,15 @@ review-gen/
 
 ## 可选：前沿文献推送工作流
 
-前沿文献推送是工作区内的可选子流程，写入 `<review-workspace>\09_frontier_push\`，不会替代现有检索、语料库、全文、计划和写作流程。Tier A 期刊采集只启用 `abs_ajg_4star`、`ft50`、`utd24`，并通过主流程同一份 AJG CSV/OpenAlex 能力解析 ISSN；不会使用 AJG 3+ 作为兜底来源。
+### 用户只需要记住三个阶段
+
+1. **生成并确认检索配置**：主题意图 → profile → 检索来源和年份。
+2. **查看并确认候选**：检索 → 去重和排序 → 人工标记 `include / exclude / hold`。
+3. **接入综述并处理全文**：确认的候选进入 `01_search/raw_json/`，再合并语料、准备全文并处理 PDF。
+
+目录职责很简单：`09_frontier_push/` 是候选区，`01_search/` 是已确认的原始搜索结果，`02_corpus/` 是正式综述文献集合，`04_fulltext/` 是正式文献的全文处理区。候选不会自动进入 corpus。
+
+前沿文献推送是工作区内的可选子流程，正式工作区操作统一通过 `review_workflow.py` 完成。`search-abs --profile` 仅用于独立命令行检索，MCP `profile_path` 仅用于外部集成。新工作区默认只检索 ABS3；需要 ABS3★、ABS4、FT50 或 UTD24 时，在工作区设置中显式增加，已有工作区设置不会被改写。
 
 ```bash
 python <review-gen-home>/skills/openalex-ajg-insights/scripts/review_workflow.py \
@@ -271,7 +279,19 @@ python <review-gen-home>/skills/openalex-ajg-insights/scripts/review_workflow.py
 python <review-gen-home>/skills/openalex-ajg-insights/scripts/review_workflow.py \
   --workspace <review-workspace> \
   draft-interest-profile \
-  --intent "检索企业资产定价影响因素的相关文献"
+  --intent "检索企业资产定价影响因素的相关文献" \
+  --directionality factors_of
+
+# audit 为 needs_revision 时，先由用户确认全部采纳、部分采纳或不采纳；
+# user_decision.status 为 pending 时不能查询 OpenAlex。
+
+python <review-gen-home>/skills/openalex-ajg-insights/scripts/review_workflow.py \
+  --workspace <review-workspace> \
+  preview-frontier-queries \
+  --profile firm_asset_pricing_determinants
+
+# 查看离线预览后，在 09_frontier_push/frontier_settings.yml 中
+# 人工加入 max_queries: 1 或 max_queries: 2。
 
 python <review-gen-home>/skills/openalex-ajg-insights/scripts/review_workflow.py \
   --workspace <review-workspace> \
@@ -285,12 +305,33 @@ python <review-gen-home>/skills/openalex-ajg-insights/scripts/review_workflow.py
   --workspace <review-workspace> \
   run-frontier-push \
   --profile firm_asset_pricing_determinants \
-  --source-tiers A,C \
   --year-start 2025 \
-  --year-end 2026
+  --year-end 2026 \
+  --input <abs_ajg_4star-current-window.json> \
+          <ft50-current-window.json> \
+          <utd24-current-window.json>
 ```
 
+`run-frontier-push` 默认严格使用 FT50、UTD24 和 ABS/AJG 4★。只有需要扩大来源时才加 `--expanded-search`；该模式默认使用 A、C 层来源，也可再用 `--source-tiers` 明确指定。
+
 候选文献先进入推送报告；只有你确认后，才通过 promotion 写入 `01_search/raw_json/`，再由原有 `merge-search-results` 进入正式 corpus。
+
+用户流程固定为三阶段：①确认 profile、预览并执行检索；②记录候选决定并 promotion；③merge、准备 manifest、下载和转换 PDF，最后生成 frontier brief。brief 存在才表示本轮前沿推送完整闭环。
+
+promotion 生成的前沿候选会保留 `source_run_id`、`frontier_candidate_id`、来源和匹配分数等追溯字段，合并到 `02_corpus/master_corpus.jsonl` 后仍可反查前沿运行。`reports/`、`deep_reads/` 和 `briefs/` 是前沿辅助产物，不替代正式 corpus，也不绕过筛选、全文、计划批准和引用白名单进入写作。
+
+确认候选并记录为 `include` 后，可尝试自动下载开放获取 PDF。系统只尝试 OpenAlex，以及提供邮箱时的 Unpaywall；无法取得 PDF 的文献会进入人工清单，不影响候选或 corpus。
+
+```powershell
+python <review-gen-home>/skills/openalex-ajg-insights/scripts/review_workflow.py `
+  --workspace <review-workspace> `
+  download-frontier-pdfs `
+  --run-id <run-id>
+```
+
+默认处理所有标记为 `include` 的候选；只有需要单篇重试时才加上 `--candidate-ids`。
+
+PDF 保存到 `04_fulltext/pdf_inbox/`；下载记录和人工清单保存到 `09_frontier_push/runs/<run-id>/`。
 
 ## License
 

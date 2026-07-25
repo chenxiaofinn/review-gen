@@ -1,11 +1,13 @@
 from mcp.server.fastmcp import FastMCP
 from openalex_mcp.abs_loader import ABSCache
-from openalex_mcp.client import OpenAlexClient
+from openalex_mcp.client import OpenAlexClient, filter_works_by_issns
 from openalex_mcp.utils import works_to_ris_block, reconstruct_abstract
 from openalex_mcp.report_generator import generate_excel_report
 import pandas as pd
 import os
 import locale
+import sys
+from pathlib import Path
 
 mcp = FastMCP("openalex-abs-search")
 
@@ -16,27 +18,54 @@ client = OpenAlexClient()
 
 @mcp.tool()
 async def search_abs_literature(
-    query: str, 
+    query: str = "",
     field: str = "", 
     min_rank: str = "3", 
     limit: int = 0, 
     year_start: int = 2024,
     export: bool = False,
-    lang: str = "auto"
+    lang: str = "auto",
+    profile_path: str = "",
+    max_queries: int = 0,
 ) -> str:
     """
     Search for literature in ABS-ranked journals.
     
     Args:
-        query: Search keywords.
+        query: Search keywords. Mutually exclusive with profile_path.
         field: ABS Field Code (e.g. 'MKT', 'ENT-SBM'). Leave empty to search ALL ABS journals (includes general management journals like AMJ, AMR).
         min_rank: Minimum rank ('3', '4', '4*').
-        limit: Max results (0 = All, up to 2000).
+        limit: Max results (0 = one budgeted page of 100).
         year_start: Start year.
         export: Whether to generate Excel/RIS files.
         lang: Output language ('cn', 'en', 'auto').
+        profile_path: Optional path to an InterestProfile YAML file.
+        max_queries: Required with profile_path; approved query rounds to execute.
     """
-    is_cn = (lang == "cn") or (lang == "auto" and any('\u4e00' <= char <= '\u9fff' for char in query))
+    if bool(query.strip()) == bool(profile_path.strip()):
+        raise ValueError("Provide exactly one of query or profile_path.")
+    if profile_path:
+        if max_queries < 1:
+            raise ValueError("max_queries must be set when profile_path is used.")
+        scripts_root = Path(__file__).resolve().parents[4] / "skills" / "openalex-ajg-insights" / "scripts"
+        if str(scripts_root) not in sys.path:
+            sys.path.insert(0, str(scripts_root))
+        from frontier_push.profiles import load_interest_profile, validate_profile_audit_path
+        from frontier_push.source_collection import build_profile_queries
+
+        profile_file = Path(profile_path)
+        validate_profile_audit_path(profile_file)
+        profile = load_interest_profile(profile_file)
+        queries = build_profile_queries(profile, max_queries=max_queries)
+    else:
+        if max_queries:
+            raise ValueError("max_queries can only be used with profile_path.")
+        queries = [query]
+
+    display_query = " | ".join(queries)
+    is_cn = (lang == "cn") or (
+        lang == "auto" and any('\u4e00' <= char <= '\u9fff' for char in display_query)
+    )
 
     # Get ISSNs - if field is empty, search all ABS journals
     search_field = field.strip() if field else None
@@ -48,9 +77,17 @@ async def search_abs_literature(
             msg = f"未找到等级>='{min_rank}' 的期刊。" if is_cn else f"No journals found for Rank>='{min_rank}'."
         return msg
 
-    # Search OpenAlex (Sort by publication date desc to get recent ones)
-    sort_param = "publication_date:desc"
-    works, has_more = await client.search_works(query, issns, limit=limit, sort=sort_param)
+    # Run one semantic query over bounded ISSN chunks, then verify locally.
+    effective_limit = limit if limit > 0 else 100
+    works, _, query_diagnostics = await client.search_query_plan_for_issn_set(
+        queries,
+        issns,
+        limit_per_chunk=effective_limit,
+        sort="relevance_score:desc",
+        year_start=year_start,
+    )
+    has_more = any(bool(query_item.get("has_more")) for query_item in query_diagnostics)
+    works = filter_works_by_issns(works, issns)
     
     # Client filter might be broad, filter by year strictly
     filtered_works = [w for w in works if w.get('publication_year', 0) >= year_start]
@@ -64,11 +101,11 @@ async def search_abs_literature(
     if is_cn:
         summary = f"已找到 **{count}** 篇文献 (领域: {field_display}, 等级: {min_rank}+, 年份: {year_start}+)。\n"
         if has_more:
-            summary += "⚠️ **注意**: 符合条件的文献超过 2000 篇，请缩小搜索范围（如提高期刊等级、缩短年份范围或添加关键词）。\n"
+            summary += f"⚠️ **注意**: OpenAlex 全库结果超过本次 {effective_limit} 条上限；当前结果为部分覆盖。\n"
     else:
         summary = f"Found **{count}** papers (Field: {field_display}, Rank: {min_rank}+, Year: {year_start}+).\n"
         if has_more:
-            summary += "⚠️ **Note**: More than 2000 results exist. Please narrow your search (e.g., increase rank, shorten year range, or add keywords).\n"
+            summary += f"⚠️ **Note**: OpenAlex returned more than the {effective_limit}-result cap; coverage is partial.\n"
 
     if export:
         base_dir = os.getcwd() 
@@ -149,7 +186,7 @@ async def search_journal_literature(
     # 2. Search
     # Reuse client but with single ISSN
     sort_param = "publication_date:desc"
-    works, has_more = await client.search_works(query, [journal_issn], limit=limit, sort=sort_param)
+    works, has_more = await client.search_works(query, [journal_issn], limit=limit, sort=sort_param, year_start=year_start)
     
     filtered_works = [w for w in works if w.get('publication_year', 0) >= year_start]
     count = len(filtered_works)
@@ -158,11 +195,11 @@ async def search_journal_literature(
     if is_cn:
         summary = f"在 **{resolved_name}** 中找到 **{count}** 篇文献 (年份: {year_start}+)。\n"
         if has_more:
-            summary += "⚠️ **注意**: 符合条件的文献超过 2000 篇，请缩小搜索范围。\n"
+            summary += "⚠️ **注意**: 结果超过本次获取上限，当前覆盖不完整。\n"
     else:
         summary = f"Found **{count}** papers in **{resolved_name}** (Year: {year_start}+).\n"
         if has_more:
-            summary += "⚠️ **Note**: More than 2000 results exist. Please narrow your search.\n"
+            summary += "⚠️ **Note**: More results exist than were retrieved; coverage is partial.\n"
         
     if count == 0:
         return summary

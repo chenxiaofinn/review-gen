@@ -10,7 +10,7 @@ from typing import Any, Iterable
 from .profiles import InterestProfile
 
 
-SUPPORTED_TIER_A_SOURCE_IDS = ("abs_ajg_4star", "ft50", "utd24")
+SUPPORTED_TIER_A_SOURCE_IDS = ("abs3", "abs3_star", "abs4", "abs_ajg_4star", "ft50", "utd24")
 LEGACY_SOURCE_ALIASES = {"abs4_star": "abs_ajg_4star", "utd24_ft50": "ft50"}
 
 FT50_JOURNALS = [
@@ -194,7 +194,16 @@ def resolve_tier_a_journals(csv_path: Path, source_ids: Iterable[str]) -> dict[s
         source_id = canonical_source_id(raw_source_id)
         if source_id not in SUPPORTED_TIER_A_SOURCE_IDS:
             raise ValueError(f"Unsupported Tier A frontier source id: {raw_source_id}")
-        if source_id == "abs_ajg_4star":
+        if source_id == "abs3":
+            journals = _dedupe_journals(journal for journal in ajg_journals if journal.rank in {"3", "3*", "4", "4*"})
+            resolved[source_id] = ResolvedSource(source_id, "A", "openalex_ajg", journals, [])
+        elif source_id == "abs3_star":
+            journals = _dedupe_journals(journal for journal in ajg_journals if journal.rank in {"3*", "4", "4*"})
+            resolved[source_id] = ResolvedSource(source_id, "A", "openalex_ajg", journals, [])
+        elif source_id == "abs4":
+            journals = _dedupe_journals(journal for journal in ajg_journals if journal.rank in {"4", "4*"})
+            resolved[source_id] = ResolvedSource(source_id, "A", "openalex_ajg", journals, [])
+        elif source_id == "abs_ajg_4star":
             journals = _dedupe_journals(journal for journal in ajg_journals if journal.rank == "4*")
             resolved[source_id] = ResolvedSource(source_id, "A", "openalex_ajg", journals, [])
         elif source_id == "ft50":
@@ -209,6 +218,35 @@ def chunked(items: list[str], size: int) -> Iterable[list[str]]:
         raise ValueError("chunk size must be positive")
     for index in range(0, len(items), size):
         yield items[index : index + size]
+
+
+def work_source_issns(work: dict[str, Any]) -> set[str]:
+    source = ((work.get("primary_location") or {}).get("source") or {})
+    values = source.get("issn") or []
+    if isinstance(values, str):
+        values = [values]
+    issns = {str(value).strip() for value in values if str(value).strip()}
+    issn_l = str(source.get("issn_l") or "").strip()
+    if issn_l:
+        issns.add(issn_l)
+    return issns
+
+
+def partition_works_by_source(
+    works: Iterable[dict[str, Any]],
+    resolved_sources: dict[str, ResolvedSource],
+) -> dict[str, list[dict[str, Any]]]:
+    allowed_by_source = {
+        source_id: {journal.issn for journal in resolved.journals}
+        for source_id, resolved in resolved_sources.items()
+    }
+    partitioned = {source_id: [] for source_id in resolved_sources}
+    for work in works:
+        issns = work_source_issns(work)
+        for source_id, allowed in allowed_by_source.items():
+            if issns & allowed:
+                partitioned[source_id].append(work)
+    return partitioned
 
 
 def record_year(record: dict[str, Any]) -> int | None:
@@ -305,18 +343,62 @@ def validate_source_payload(payload: Any, path: Path | None = None) -> list[str]
 
 
 def build_profile_queries(profile: InterestProfile, max_queries: int | None = None) -> list[str]:
-    queries: list[str] = []
-    seen: set[str] = set()
-    for phrase in [*profile.exact_phrases, *profile.near_phrases]:
-        cleaned = str(phrase or "").strip()
-        key = cleaned.lower()
-        if not cleaned or key in seen:
-            continue
-        seen.add(key)
-        queries.append(cleaned)
-        if max_queries is not None and len(queries) >= max_queries:
-            break
-    return queries
+    def quoted_or_group(terms: Iterable[str]) -> str:
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for term in terms:
+            value = str(term or "").strip()
+            key = value.lower()
+            if not value or key in seen:
+                continue
+            seen.add(key)
+            cleaned.append(f'"{value}"')
+        if not cleaned:
+            return ""
+        return cleaned[0] if len(cleaned) == 1 else f"({' OR '.join(cleaned)})"
+
+    if profile.directionality == "descriptive":
+        exact_terms = {str(term).strip().lower() for term in profile.exact_phrases if str(term).strip()}
+        searchable_terms = {
+            str(term).strip().lower()
+            for term in [*profile.exact_phrases, *profile.near_phrases]
+            if str(term).strip()
+        }
+
+        def compile_required_groups(allowed_terms: set[str], label: str) -> str:
+            groups: list[str] = []
+            for group_name, terms in profile.required_concept_groups.items():
+                selected = [term for term in terms if str(term).strip().lower() in allowed_terms]
+                group = quoted_or_group(selected)
+                if not group:
+                    raise ValueError(
+                        f"Descriptive query level {label!r} cannot cover required concept group "
+                        f"{group_name!r}. Add at least one exact phrase for every required group."
+                    )
+                groups.append(group)
+            return " AND ".join(groups)
+
+        exact_query = compile_required_groups(exact_terms, "exact")
+        expanded_query = compile_required_groups(searchable_terms, "exact+near")
+        queries = [exact_query]
+        if expanded_query != exact_query:
+            queries.append(expanded_query)
+    else:
+        # Preserve the existing single-query behavior for non-descriptive
+        # profiles. Related terms, exclusions, directionality, and JEL remain
+        # downstream concerns rather than standalone OpenAlex queries.
+        query = quoted_or_group([*profile.exact_phrases, *profile.near_phrases])
+        if not query:
+            raise ValueError("Profile must define at least one exact_phrases or near_phrases search anchor.")
+        queries = [query]
+
+    if max_queries is None:
+        return queries
+    if not isinstance(max_queries, int) or isinstance(max_queries, bool):
+        raise ValueError("max_queries must be an integer.")
+    if max_queries < 1 or max_queries > len(queries):
+        raise ValueError(f"max_queries must be between 1 and {len(queries)} for profile {profile.id!r}.")
+    return queries[:max_queries]
 
 
 def build_source_payload(

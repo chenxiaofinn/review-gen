@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted; source defaults amended by ADR 0005
 
 ## Context
 
@@ -52,8 +52,8 @@ The review workflow CLI may add these optional commands:
 
 - `init-frontier-push`
 - `draft-interest-profile --intent "..."`
-- `run-frontier-push --profile <id> --source-tiers A,C`
-- `promote-frontier-candidates --run-id <id> --candidate-ids ...`
+- `run-frontier-push --profile <id> ...` (TA-only by default; see ADR 0005)
+- `promote-frontier-candidates --run-id <id>` (processes reviewed `include` candidates)
 - `decompose-paper --paper-key <key>`
 
 ## Consequences

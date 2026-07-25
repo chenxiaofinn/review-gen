@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -8,7 +7,7 @@ from typing import Any
 from .candidates import build_frontier_candidates, deduplicate_candidates, write_candidates_jsonl
 from .profiles import InterestProfile
 from .reports import render_frontier_report
-from .source_collection import canonical_source_id, filter_records_by_year
+from .source_collection import canonical_source_id, filter_records_by_year, record_year
 from .sources import default_source_catalog
 
 
@@ -24,35 +23,27 @@ def source_tier_map(catalog: dict[str, Any] | None = None) -> dict[str, str]:
     return tiers
 
 
-def _resolve_input_year_bounds(
-    workspace: Path,
-    records_by_source: dict[str, list[dict[str, Any]]],
-) -> dict[str, tuple[int | None, int | None]]:
-    """Map each canonical source_id to its payload year bounds if available.
-
-    Files written by ``collect-frontier-sources`` carry ``year_start`` /
-    ``year_end`` at the payload level. Files written before ADR-0004 do not;
-    the loader returns ``(None, None)`` for them so the CLI filter still
-    applies downstream.
-    """
-    sources_root = workspace / "09_frontier_push" / "source_records"
-    bounds: dict[str, tuple[int | None, int | None]] = {}
-    if not sources_root.exists():
-        return bounds
-    for payload_path in sorted(sources_root.glob("*.json")):
-        try:
-            data = json.loads(payload_path.read_text(encoding="utf-8-sig"))
-        except (OSError, json.JSONDecodeError):
+def _filter_records_by_payload_bounds(records: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+    kept: list[dict[str, Any]] = []
+    excluded = 0
+    for record in records:
+        payload_start = record.get("_frontier_payload_year_start")
+        payload_end = record.get("_frontier_payload_year_end")
+        if not isinstance(payload_start, int) and not isinstance(payload_end, int):
+            kept.append(record)
             continue
-        if not isinstance(data, dict):
+        year = record_year(record)
+        if year is None:
+            excluded += 1
             continue
-        raw_id = data.get("source_id") or payload_path.stem
-        canonical = canonical_source_id(str(raw_id))
-        bounds[canonical] = (
-            data.get("year_start") if isinstance(data.get("year_start"), int) else None,
-            data.get("year_end") if isinstance(data.get("year_end"), int) else None,
-        )
-    return bounds
+        if isinstance(payload_start, int) and year < payload_start:
+            excluded += 1
+            continue
+        if isinstance(payload_end, int) and year > payload_end:
+            excluded += 1
+            continue
+        kept.append(record)
+    return kept, excluded
 
 
 def run_frontier_push_from_records(
@@ -69,8 +60,6 @@ def run_frontier_push_from_records(
     tiers_by_source = source_tier_map(catalog)
     allowed_tiers = set(source_tiers)
 
-    payload_bounds = _resolve_input_year_bounds(workspace, records_by_source)
-
     candidates = []
     year_filter = {
         "input_records": 0,
@@ -84,15 +73,8 @@ def run_frontier_push_from_records(
         tier = tiers_by_source.get(source_id, tiers_by_source.get(raw_source_id, "C"))
         if tier not in allowed_tiers:
             continue
-        payload_start, payload_end = payload_bounds.get(source_id, (None, None))
-        if payload_start is not None or payload_end is not None:
-            within_payload, payload_stats = filter_records_by_year(
-                records, year_start=payload_start, year_end=payload_end
-            )
-            year_filter["excluded_by_payload_bounds"] += payload_stats[
-                "excluded_out_of_range"
-            ] + payload_stats["excluded_missing_year"]
-            records = within_payload
+        records, payload_excluded = _filter_records_by_payload_bounds(records)
+        year_filter["excluded_by_payload_bounds"] += payload_excluded
         filtered_records, stats = filter_records_by_year(records, year_start=year_start, year_end=year_end)
         for key in year_filter:
             if key == "excluded_by_payload_bounds":

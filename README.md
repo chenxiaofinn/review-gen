@@ -267,7 +267,11 @@ MIT. See [LICENSE](LICENSE).
 
 `review-gen` can also maintain a workspace-local frontier push subflow under `09_frontier_push/`. This is optional and does not replace the normal search, corpus, manifest, planner, or writer workflow.
 
-Tier A frontier collection now resolves only AJG 4*, FT50, and UTD24 journal pools through the bundled AJG CSV/OpenAlex bridge. Collection writes reviewable source-record JSON first; push reports are generated from those records and remain outside the corpus until selected candidates are promoted.
+Use `review_workflow.py` as the canonical workspace entrypoint. `search-abs
+--profile` is for standalone CLI searches, while MCP `profile_path` is an
+integration interface. New frontier workspaces default to ABS3 only; broader
+configured pools remain available and existing workspace settings are not
+rewritten.
 
 ```bash
 python skills/openalex-ajg-insights/scripts/review_workflow.py \
@@ -278,6 +282,14 @@ python skills/openalex-ajg-insights/scripts/review_workflow.py \
   --workspace <review-workspace> \
   draft-interest-profile \
   --intent "企业资产定价影响因素"
+
+python skills/openalex-ajg-insights/scripts/review_workflow.py \
+  --workspace <review-workspace> \
+  preview-frontier-queries \
+  --profile firm_asset_pricing_determinants
+
+# After reviewing the offline preview, add max_queries: 1 or 2 to
+# 09_frontier_push/frontier_settings.yml.
 
 python skills/openalex-ajg-insights/scripts/review_workflow.py \
   --workspace <review-workspace> \
@@ -297,3 +309,7 @@ python skills/openalex-ajg-insights/scripts/review_workflow.py \
 ```
 
 Candidate papers are written to `09_frontier_push/runs/<run-id>/candidates.jsonl` and reports to `09_frontier_push/reports/`. They are not added to `02_corpus/master_corpus.jsonl` until selected candidates are promoted into `01_search/raw_json/` and the normal merge step is run. LLM features use OpenAI-compatible `OPENAI_API_KEY`, `OPENAI_BASE_URL`, and `OPENAI_MODEL`; without a key the workflow writes a complete prompt fallback.
+
+The three user stages are: confirm and run the search; review and promote
+candidates; merge, prepare the manifest, process full text, and generate the
+frontier brief. The latest run is complete only when its brief exists.

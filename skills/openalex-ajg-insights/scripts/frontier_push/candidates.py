@@ -32,6 +32,11 @@ class FrontierCandidate:
     push_bucket: str
     strong_signal: bool
 
+    @property
+    def topic_match_score(self) -> int:
+        """Mechanical topic-match score; not a paper-quality judgment."""
+        return self.match_score
+
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "FrontierCandidate":
         return cls(
@@ -47,22 +52,39 @@ class FrontierCandidate:
             source_id=str(payload.get("source_id", "")),
             source_tier=str(payload.get("source_tier", "")),
             source_type=str(payload.get("source_type", "")),
-            match_score=int(payload.get("match_score") or 0),
+            match_score=int(payload.get("topic_match_score", payload.get("match_score")) or 0),
             match_reasons=list(payload.get("match_reasons") or []),
             push_bucket=str(payload.get("push_bucket", "")),
             strong_signal=bool(payload.get("strong_signal")),
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        payload["topic_match_score"] = payload["match_score"]
+        payload["score_interpretation"] = "mechanical topic-match signal; not paper quality or inclusion decision"
+        return payload
 
 
 def normalize_text(text: str) -> str:
     return re.sub(r"\s+", " ", text or "").strip().lower()
 
 
+def normalize_doi(value: str) -> str:
+    doi = normalize_text(value)
+    doi = re.sub(r"^https?://(dx\.)?doi\.org/", "", doi)
+    doi = re.sub(r"^doi:\s*", "", doi)
+    doi = re.sub(r"^(10\.\d{4,9})/+", r"\1/", doi)
+    return doi.rstrip(".")
+
+
+def _is_correction_notice(record: dict[str, Any]) -> bool:
+    title = normalize_text(str(record.get("title") or ""))
+    title = title.strip('"')
+    return bool(re.search(r":\s*correction\.?$", title))
+
+
 def candidate_key(record: dict[str, Any]) -> str:
-    doi = normalize_text(str(record.get("doi") or ""))
+    doi = normalize_doi(str(record.get("doi") or ""))
     if doi:
         return f"doi::{doi}"
     openalex_id = normalize_text(str(record.get("openalex_id") or record.get("id") or ""))
@@ -141,6 +163,34 @@ def score_record(record: dict[str, Any], profile: InterestProfile) -> tuple[int,
     return score, reasons
 
 
+def _required_concept_reasons(record: dict[str, Any], profile: InterestProfile) -> list[str] | None:
+    groups = profile.required_concept_groups
+    if profile.directionality == "descriptive" and len(groups) < 2:
+        raise ValueError("descriptive profiles require at least two non-empty required_concept_groups.")
+    if not groups:
+        return []
+
+    text = _combined_text(record)
+    # OpenAlex often returns recent works without an abstract.  In that case
+    # the source query is still useful retrieval evidence, but we label it as
+    # such rather than pretending it was found in the paper metadata.
+    query_text = normalize_text(str(record.get("source_query") or ""))
+    metadata_missing = not str(record.get("abstract") or "").strip()
+    reasons: list[str] = []
+    for group_name, terms in groups.items():
+        matched = next((term for term in terms if _contains_phrase(text, term)), None)
+        if matched is not None:
+            reasons.append(f"required concept: {group_name} = {matched}")
+            continue
+        if metadata_missing:
+            query_match = next((term for term in terms if _contains_phrase(query_text, term)), None)
+            if query_match is not None:
+                reasons.append(f"retrieval query concept: {group_name} = {query_match} (abstract unavailable)")
+                continue
+        return None
+    return reasons
+
+
 def choose_push_bucket(source_tier: str, score: int, strong_signal: bool) -> str:
     if source_tier == "A" and score > 0:
         return "main_push"
@@ -156,9 +206,14 @@ def build_frontier_candidates(
     source_tier: str,
     source_type: str = "metadata",
 ) -> list[FrontierCandidate]:
+    if profile.directionality == "descriptive" and len(profile.required_concept_groups) < 2:
+        raise ValueError("descriptive profiles require at least two non-empty required_concept_groups.")
     candidates: list[FrontierCandidate] = []
     for record in records:
-        if _violates_exclusion(record, profile) or _violates_directionality(record, profile):
+        if _is_correction_notice(record) or _violates_exclusion(record, profile) or _violates_directionality(record, profile):
+            continue
+        concept_reasons = _required_concept_reasons(record, profile)
+        if concept_reasons is None:
             continue
         score, reasons = score_record(record, profile)
         if score <= 0:
@@ -171,7 +226,7 @@ def build_frontier_candidates(
                 year=record.get("year") or record.get("publication_year"),
                 venue=str(record.get("venue") or record.get("journal") or "Unknown Venue"),
                 authors=list(record.get("authors") or []),
-                doi=str(record.get("doi") or ""),
+                doi=normalize_doi(str(record.get("doi") or "")),
                 openalex_id=str(record.get("openalex_id") or record.get("id") or ""),
                 url=str(record.get("url") or record.get("landing_page_url") or ""),
                 abstract=str(record.get("abstract") or ""),
@@ -179,7 +234,7 @@ def build_frontier_candidates(
                 source_tier=source_tier,
                 source_type=source_type,
                 match_score=score,
-                match_reasons=reasons,
+                match_reasons=[*concept_reasons, *reasons],
                 push_bucket=choose_push_bucket(source_tier, score, strong_signal),
                 strong_signal=strong_signal,
             )
@@ -190,7 +245,7 @@ def build_frontier_candidates(
 def deduplicate_candidates(candidates: list[FrontierCandidate]) -> list[FrontierCandidate]:
     best_by_key: dict[str, FrontierCandidate] = {}
     for candidate in candidates:
-        key = candidate.doi.lower() if candidate.doi else candidate.title.lower()
+        key = normalize_doi(candidate.doi) if candidate.doi else candidate.title.lower()
         current = best_by_key.get(key)
         if current is None:
             best_by_key[key] = candidate
@@ -217,4 +272,3 @@ def load_candidates_jsonl(path: Path) -> list[FrontierCandidate]:
         if line.strip():
             candidates.append(FrontierCandidate.from_dict(json.loads(line)))
     return candidates
-

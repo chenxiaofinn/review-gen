@@ -28,7 +28,7 @@
 - Product boundary preserved: the change strengthens the review workspace as
   the durable source of truth.
 - Literature-push remains a workspace subflow. Candidates still go to reports
-  first and require explicit user-selected `candidate_ids` before promotion.
+  first and require an explicit human `include` decision before promotion.
 - Manual fields are preserved. The status command is read-only and does not
   overwrite screening, manifest, evidence, plan, corpus, frontier runs,
   reports, or source-record files.

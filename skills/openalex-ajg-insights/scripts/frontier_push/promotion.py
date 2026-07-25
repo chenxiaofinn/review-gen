@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .candidates import FrontierCandidate, load_candidates_jsonl
+from .review_decisions import load_review_decisions
 
 
 def _safe_stem(text: str) -> str:
@@ -14,7 +15,10 @@ def _safe_stem(text: str) -> str:
     return cleaned or "frontier_push"
 
 
-def _candidate_to_raw_search_paper(candidate: FrontierCandidate) -> dict[str, Any]:
+def _candidate_to_raw_search_paper(
+    candidate: FrontierCandidate,
+    review_decision: dict[str, Any],
+) -> dict[str, Any]:
     abstract = candidate.abstract or ""
     return {
         "title": candidate.title,
@@ -40,6 +44,10 @@ def _candidate_to_raw_search_paper(candidate: FrontierCandidate) -> dict[str, An
         "frontier_source_tier": candidate.source_tier,
         "frontier_push_bucket": candidate.push_bucket,
         "frontier_match_score": candidate.match_score,
+        "frontier_review_decision": "include",
+        "frontier_review_reason": str(review_decision.get("reason") or ""),
+        "frontier_reviewer": str(review_decision.get("reviewer") or ""),
+        "frontier_reviewed_at": str(review_decision.get("reviewed_at") or ""),
     }
 
 
@@ -149,7 +157,7 @@ def write_consolidated_ris(workspace: Path, run_id: str, candidates: list[Fronti
 def promote_frontier_candidates(
     workspace: Path,
     run_id: str,
-    candidate_ids: list[str],
+    candidate_ids: list[str] | None = None,
     output_path: Path | None = None,
     write_ris: bool = True,
 ) -> dict[str, Any]:
@@ -157,11 +165,22 @@ def promote_frontier_candidates(
     candidates = load_candidates_jsonl(candidates_path)
     by_id = {candidate.candidate_id: candidate for candidate in candidates}
 
-    missing = [candidate_id for candidate_id in candidate_ids if candidate_id not in by_id]
+    review_decisions = load_review_decisions(candidates_path.parent)
+    included = {
+        candidate_id
+        for candidate_id, row in review_decisions.items()
+        if row.get("decision") == "include"
+    }
+    selected_ids = candidate_ids or sorted(included)
+
+    missing = [candidate_id for candidate_id in selected_ids if candidate_id not in by_id]
     if missing:
         raise ValueError(f"Candidate id(s) not found in run {run_id}: {', '.join(missing)}")
 
-    selected = [by_id[candidate_id] for candidate_id in candidate_ids]
+    not_included = [candidate_id for candidate_id in selected_ids if candidate_id not in included]
+    if not_included:
+        raise ValueError("Only candidates marked include can be promoted: " + ", ".join(not_included))
+    selected = [by_id[candidate_id] for candidate_id in selected_ids]
     raw_output = output_path or workspace / "01_search" / "raw_json" / f"frontier_push_{_safe_stem(run_id)}.json"
     raw_output.parent.mkdir(parents=True, exist_ok=True)
 
@@ -170,7 +189,10 @@ def promote_frontier_candidates(
         "query": "frontier push promoted candidates",
         "source_run_id": run_id,
         "count": len(selected),
-        "papers": [_candidate_to_raw_search_paper(candidate) for candidate in selected],
+        "papers": [
+            _candidate_to_raw_search_paper(candidate, review_decisions[candidate.candidate_id])
+            for candidate in selected
+        ],
     }
     raw_output.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 

@@ -4,15 +4,19 @@ import argparse
 import csv
 import json
 import shutil
+import sys
 from datetime import datetime
 from pathlib import Path
+
+import yaml
 
 
 APPROVED_PREFIX = "Plan status: APPROVED"
 DRAFT_PREFIX = "Plan status: DRAFT"
 PLAN_DIR_NAME = "07_plan"
 LEGACY_PLAN_DIR_NAME = "07_notes"
-TA_ONLY_SOURCE_IDS = ("abs_ajg_4star", "ft50", "utd24")
+TA_ONLY_SOURCE_IDS = ("abs3", "abs3_star", "abs4", "abs_ajg_4star", "ft50", "utd24")
+SOURCE_ALIASES = {"abs4_star": "abs_ajg_4star", "utd24_ft50": "ft50"}
 
 
 def read_jsonl(path: Path) -> list[dict]:
@@ -137,24 +141,105 @@ def _latest_mtime(paths: list[Path]) -> float:
     return max((path.stat().st_mtime for path in paths if path.exists()), default=0.0)
 
 
+def _configured_ta_source_ids(workspace: Path) -> tuple[str, ...]:
+    settings_path = workspace / "09_frontier_push" / "frontier_settings.yml"
+    if not settings_path.exists():
+        return TA_ONLY_SOURCE_IDS
+    try:
+        settings = yaml.safe_load(settings_path.read_text(encoding="utf-8-sig")) or {}
+    except (OSError, yaml.YAMLError):
+        return TA_ONLY_SOURCE_IDS
+    raw_sources = settings.get("source_ids") if isinstance(settings, dict) else None
+    if isinstance(raw_sources, str):
+        values = [item.strip() for item in raw_sources.split(",") if item.strip()]
+    elif isinstance(raw_sources, list):
+        values = [str(item).strip() for item in raw_sources if str(item).strip()]
+    else:
+        return TA_ONLY_SOURCE_IDS
+    normalized = tuple(dict.fromkeys(SOURCE_ALIASES.get(value, value) for value in values))
+    return normalized or TA_ONLY_SOURCE_IDS
+
+
+def _configured_max_queries(workspace: Path) -> int | None:
+    settings_path = workspace / "09_frontier_push" / "frontier_settings.yml"
+    if not settings_path.exists():
+        return None
+    try:
+        settings = yaml.safe_load(settings_path.read_text(encoding="utf-8-sig")) or {}
+    except (OSError, yaml.YAMLError):
+        return None
+    value = settings.get("max_queries") if isinstance(settings, dict) else None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return None
+
+
+def _frontier_query_plan_status(
+    workspace: Path,
+    active_profile_id: str,
+) -> dict:
+    result = {
+        "available_query_count": 0,
+        "max_queries": _configured_max_queries(workspace),
+        "query_plan_error": "",
+    }
+    if not active_profile_id:
+        return result
+    settings_path = workspace / "09_frontier_push" / "frontier_settings.yml"
+    if settings_path.exists():
+        try:
+            settings = yaml.safe_load(settings_path.read_text(encoding="utf-8-sig")) or {}
+        except (OSError, yaml.YAMLError) as exc:
+            result["query_plan_error"] = f"Cannot read frontier settings: {exc}"
+            return result
+        if isinstance(settings, dict) and "max_queries" in settings and result["max_queries"] is None:
+            result["query_plan_error"] = "Frontier setting 'max_queries' must be an integer."
+            return result
+    try:
+        scripts_root = Path(__file__).resolve().parents[2] / "openalex-ajg-insights" / "scripts"
+        if str(scripts_root) not in sys.path:
+            sys.path.insert(0, str(scripts_root))
+        from frontier_push.profiles import load_interest_profile, profile_path
+        from frontier_push.source_collection import build_profile_queries
+
+        profile = load_interest_profile(profile_path(workspace, active_profile_id))
+        queries = build_profile_queries(profile)
+        result["available_query_count"] = len(queries)
+        if result["max_queries"] is not None:
+            build_profile_queries(profile, max_queries=result["max_queries"])
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        result["query_plan_error"] = str(exc)
+    return result
+
+
 def _frontier_status(workspace: Path) -> dict:
     root = workspace / "09_frontier_push"
     profiles_dir = root / "profiles"
     records_dir = root / "source_records"
     runs_dir = root / "runs"
+    briefs_dir = root / "briefs"
     raw_dir = workspace / "01_search" / "raw_json"
     ris_dir = workspace / "02_corpus" / "zotero_ris"
 
     profile_paths = []
     if profiles_dir.exists():
-        profile_paths = sorted(profiles_dir.glob("*.yml")) + sorted(profiles_dir.glob("*.yaml"))
-    profile_ids = [_profile_id_from_file(path) for path in profile_paths]
+        profile_paths = [
+            path
+            for path in sorted(profiles_dir.glob("*.yml")) + sorted(profiles_dir.glob("*.yaml"))
+            if not path.name.endswith((".audit.yml", ".audit.yaml"))
+        ]
+    profile_ids = sorted({_profile_id_from_file(path) for path in profile_paths})
     active_profile_id = profile_ids[0] if len(profile_ids) == 1 else ""
 
     source_payloads: list[dict] = []
     source_paths = sorted(records_dir.glob("*.json")) if records_dir.exists() else []
     for path in source_paths:
         payload = _read_json(path)
+        diagnostics = payload.get("diagnostics") or {}
         source_payloads.append(
             {
                 "path": str(path),
@@ -163,51 +248,101 @@ def _frontier_status(workspace: Path) -> dict:
                 "year_start": payload.get("year_start"),
                 "year_end": payload.get("year_end"),
                 "source_tier": str(payload.get("source_tier") or ""),
+                "collection_status": str(diagnostics.get("collection_status") or ""),
+                "mtime": path.stat().st_mtime,
             }
         )
 
+    payload_groups: dict[tuple[str, object, object], list[dict]] = {}
+    for item in source_payloads:
+        key = (item["profile_id"], item["year_start"], item["year_end"])
+        payload_groups.setdefault(key, []).append(item)
+    active_group_key = max(
+        payload_groups,
+        key=lambda key: max(item["mtime"] for item in payload_groups[key]),
+        default=None,
+    )
+    active_source_payloads = payload_groups.get(active_group_key, []) if active_group_key else []
     payload_profile_ids = {item["profile_id"] for item in source_payloads if item["profile_id"]}
-    year_windows = {
-        (item["year_start"], item["year_end"])
-        for item in source_payloads
-        if item["year_start"] is not None or item["year_end"] is not None
-    }
-    source_ids = {item["source_id"] for item in source_payloads}
+    source_ids = {item["source_id"] for item in active_source_payloads}
+    expected_source_ids = _configured_ta_source_ids(workspace)
     warnings: list[str] = []
-    if len(payload_profile_ids) > 1:
-        warnings.append(f"Mixed source_records profiles detected: {sorted(payload_profile_ids)}.")
-    if len(year_windows) > 1:
-        warnings.append(f"Mixed source_records year windows detected: {sorted(year_windows)}.")
-    unexpected_sources = sorted(source_ids - set(TA_ONLY_SOURCE_IDS))
+    incomplete_collections = [
+        item
+        for item in active_source_payloads
+        if item["collection_status"]
+        and item["collection_status"] not in {"complete", "complete_zero_results"}
+    ]
+    if incomplete_collections:
+        details = [f"{Path(item['path']).name}={item['collection_status']}" for item in incomplete_collections]
+        warnings.append(f"Incomplete frontier source collection: {details}.")
+    unexpected_sources = sorted(source_ids - set(expected_source_ids))
     if unexpected_sources:
         warnings.append(f"Non-TA source_records detected for TA-only workflow: {unexpected_sources}.")
 
     explicit_input_paths: list[str] = []
     missing_ta_sources: list[str] = []
-    if source_payloads and not warnings:
-        by_source = {item["source_id"]: item for item in source_payloads}
-        missing_ta_sources = [source_id for source_id in TA_ONLY_SOURCE_IDS if source_id not in by_source]
+    if active_source_payloads and not warnings:
+        by_source = {item["source_id"]: item for item in active_source_payloads}
+        missing_ta_sources = [source_id for source_id in expected_source_ids if source_id not in by_source]
         if not missing_ta_sources:
-            explicit_input_paths = [by_source[source_id]["path"] for source_id in TA_ONLY_SOURCE_IDS]
+            explicit_input_paths = [by_source[source_id]["path"] for source_id in expected_source_ids]
 
     candidate_paths = sorted(runs_dir.glob("*/candidates.jsonl")) if runs_dir.exists() else []
+    brief_paths = sorted(briefs_dir.glob("*.md")) if briefs_dir.exists() else []
     raw_paths = sorted(raw_dir.glob("frontier_push_*.json")) if raw_dir.exists() else []
     ris_paths = sorted(ris_dir.glob("frontier_push_*.ris")) if ris_dir.exists() else []
-    latest_run_id = candidate_paths[-1].parent.name if candidate_paths else ""
+    latest_candidate_path = max(candidate_paths, key=lambda path: path.stat().st_mtime) if candidate_paths else None
+    latest_run_id = latest_candidate_path.parent.name if latest_candidate_path else ""
+    latest_candidate_count = len(read_jsonl(latest_candidate_path)) if latest_candidate_path else 0
+    latest_review_path = latest_candidate_path.parent / "review_decisions.jsonl" if latest_candidate_path else None
+    latest_review_rows = read_jsonl(latest_review_path) if latest_review_path and latest_review_path.exists() else []
+    latest_reviewed_ids = {
+        str(row.get("candidate_id") or "")
+        for row in latest_review_rows
+        if str(row.get("candidate_id") or "")
+    }
+    latest_included_ids = {
+        str(row.get("candidate_id") or "")
+        for row in latest_review_rows
+        if row.get("decision") == "include" and str(row.get("candidate_id") or "")
+    }
+    latest_promoted_path = raw_dir / f"frontier_push_{latest_run_id}.json" if latest_run_id else None
+    latest_run_brief = briefs_dir / f"{latest_run_id}.md" if latest_run_id else None
+    latest_run_brief_path = str(latest_run_brief) if latest_run_brief and latest_run_brief.exists() else ""
 
     if not active_profile_id and len(payload_profile_ids) == 1:
         active_profile_id = next(iter(payload_profile_ids))
+    query_plan_status = _frontier_query_plan_status(workspace, active_profile_id)
 
     return {
         "root_exists": root.exists(),
         "profile_paths": [str(path) for path in profile_paths],
         "active_profile_id": active_profile_id,
         "source_record_paths": [str(path) for path in source_paths],
+        "active_source_record_paths": [item["path"] for item in active_source_payloads],
         "explicit_input_paths": explicit_input_paths,
         "missing_ta_sources": missing_ta_sources,
+        "expected_ta_sources": list(expected_source_ids),
+        "max_queries": query_plan_status["max_queries"],
+        "available_query_count": query_plan_status["available_query_count"],
+        "query_plan_error": query_plan_status["query_plan_error"],
+        "incomplete_collection_paths": [item["path"] for item in incomplete_collections],
         "warnings": warnings,
         "candidate_paths": [str(path) for path in candidate_paths],
         "latest_run_id": latest_run_id,
+        "latest_candidate_count": latest_candidate_count,
+        "latest_review_decision_path": (
+            str(latest_review_path) if latest_review_path and latest_review_path.exists() else ""
+        ),
+        "latest_reviewed_count": len(latest_reviewed_ids),
+        "latest_included_candidate_ids": sorted(latest_included_ids),
+        "latest_run_promoted_path": (
+            str(latest_promoted_path) if latest_promoted_path and latest_promoted_path.exists() else ""
+        ),
+        "brief_paths": [str(path) for path in brief_paths],
+        "latest_run_brief_path": latest_run_brief_path,
+        "latest_run_complete": bool(latest_run_brief_path),
         "promoted_raw_json": [str(path) for path in raw_paths],
         "consolidated_ris": [str(path) for path in ris_paths],
         "latest_candidate_mtime": _latest_mtime(candidate_paths),
@@ -257,6 +392,11 @@ def _manifest_status(fulltext_rows: list[dict[str, str]]) -> dict:
         "ready_pdf_count": ready_pdf,
         "ready_markdown_count": ready_md,
         "missing_expected_pdf_names": missing_pdf_names,
+        "by_paper_key": {
+            str(row.get("paper_key") or ""): row
+            for row in fulltext_rows
+            if str(row.get("paper_key") or "")
+        },
     }
 
 
@@ -298,6 +438,8 @@ def _derive_stage(
         completed.append("frontier_candidate_report")
     if frontier["promoted_raw_json"]:
         completed.append("frontier_promotion")
+    if frontier["latest_run_complete"]:
+        completed.append("frontier_brief")
     if corpus_rows:
         completed.append("master_corpus")
     if screening["rows"]:
@@ -315,14 +457,218 @@ def _derive_stage(
     if packet_exists:
         completed.append("writing_packet")
 
+    if frontier["candidate_paths"] and not frontier["latest_run_complete"]:
+        run_id = frontier["latest_run_id"]
+        candidate_count = frontier["latest_candidate_count"]
+        reviewed_count = frontier["latest_reviewed_count"]
+        included_ids = set(frontier["latest_included_candidate_ids"])
+        if candidate_count == 0:
+            return (
+                "frontier_no_candidates",
+                "",
+                _action(
+                    "review_frontier_scope",
+                    "No candidates were found; review the profile, year window, or source scope before another frontier run.",
+                    run_id=run_id,
+                ),
+                completed,
+                missing,
+                next_skill,
+                "search",
+            )
+        if reviewed_count < candidate_count:
+            missing.append("frontier_review_decisions")
+            return (
+                "candidate_triage",
+                "candidate_triage",
+                _action(
+                    "record_frontier_review",
+                    "Record include, exclude, or hold decisions for every candidate before promotion.",
+                    run_id=run_id,
+                    candidate_count=candidate_count,
+                    reviewed_count=reviewed_count,
+                ),
+                completed,
+                missing,
+                next_skill,
+                "search",
+            )
+        completed.append("frontier_candidate_review")
+        if not included_ids:
+            return (
+                "frontier_closed_no_includes",
+                "",
+                _action(
+                    "review_frontier_scope",
+                    "Candidate review is complete with no included papers; no frontier brief can be generated.",
+                    run_id=run_id,
+                ),
+                completed,
+                missing,
+                next_skill,
+                "search",
+            )
+
+        promoted_ids = {
+            str(row.get("frontier_candidate_id") or "")
+            for row in corpus_rows
+            if str(row.get("source_run_id") or "") == run_id
+        }
+        if not frontier["latest_run_promoted_path"]:
+            return (
+                "frontier_review_complete",
+                "",
+                _action(
+                    "promote_frontier_candidates",
+                    "Promote the included frontier candidates into the raw search layer.",
+                    run_id=run_id,
+                ),
+                completed,
+                missing,
+                next_skill,
+                "search",
+            )
+        if not included_ids.issubset(promoted_ids):
+            return (
+                "promoted_ready_for_merge",
+                "",
+                _action(
+                    "merge_search_results",
+                    "Merge the latest promoted frontier JSON into the durable corpus.",
+                    run_id=run_id,
+                    input_path=frontier["latest_run_promoted_path"],
+                ),
+                completed,
+                missing,
+                next_skill,
+                "search",
+            )
+        completed.append("frontier_promotion_merged")
+
+        run_paper_keys = {
+            str(row.get("paper_key") or "")
+            for row in corpus_rows
+            if str(row.get("source_run_id") or "") == run_id
+        }
+        frontier_screening_incomplete = run_paper_keys & (
+            set(screening["missing_paper_keys"]) | set(screening["undecided_paper_keys"])
+        )
+        if frontier_screening_incomplete:
+            return (
+                "frontier_screening_handoff_incomplete",
+                "",
+                _action(
+                    "merge_search_results",
+                    "Refresh the merge so frontier include decisions populate screening without overwriting manual values.",
+                    run_id=run_id,
+                    paper_keys=sorted(frontier_screening_incomplete),
+                ),
+                completed,
+                missing,
+                next_skill,
+                "screening",
+            )
+
+        manifest_by_key = manifest["by_paper_key"]
+        missing_manifest_keys = sorted(run_paper_keys - set(manifest_by_key))
+        if missing_manifest_keys:
+            return (
+                "frontier_manifest_required",
+                "",
+                _action(
+                    "prepare_fulltext_manifest",
+                    "Add the included frontier papers to the full-text manifest.",
+                    require_included=True,
+                    paper_keys=missing_manifest_keys,
+                ),
+                completed,
+                missing,
+                next_skill,
+                "manifest",
+            )
+
+        missing_pdf_keys = sorted(
+            key
+            for key in run_paper_keys
+            if str((manifest_by_key.get(key) or {}).get("pdf_status") or "").strip().lower()
+            not in {"ready", "uploaded", "archived"}
+        )
+        if missing_pdf_keys:
+            manual_path = workspace / "09_frontier_push" / "runs" / run_id / "manual_download.tsv"
+            if manual_path.exists():
+                action = _action(
+                    "complete_manual_frontier_downloads",
+                    "Automatic PDF collection left unresolved papers; complete the run's manual download list.",
+                    run_id=run_id,
+                    manual_download_path=str(manual_path),
+                    paper_keys=missing_pdf_keys,
+                )
+            else:
+                action = _action(
+                    "download_frontier_pdfs",
+                    "Download the included frontier PDFs before MinerU conversion.",
+                    run_id=run_id,
+                    paper_keys=missing_pdf_keys,
+                )
+            return ("frontier_pdf_collection", "", action, completed, missing, next_skill, "fulltext")
+
+        missing_markdown_keys = sorted(
+            key
+            for key in run_paper_keys
+            if str((manifest_by_key.get(key) or {}).get("md_status") or "").strip().lower() != "ready"
+        )
+        if missing_markdown_keys:
+            return (
+                "frontier_conversion_required",
+                "",
+                _action(
+                    "convert_pdfs_with_mineru",
+                    "Convert the included frontier PDFs to Markdown before generating the brief.",
+                    run_id=run_id,
+                    paper_keys=missing_markdown_keys,
+                ),
+                completed,
+                missing,
+                next_skill,
+                "fulltext",
+            )
+        return (
+            "frontier_brief_required",
+            "",
+            _action(
+                "generate_frontier_brief",
+                "Generate the frontier brief to complete the latest frontier run.",
+                run_id=run_id,
+                profile_id=frontier["active_profile_id"],
+            ),
+            completed,
+            missing,
+            next_skill,
+            "fulltext",
+        )
+
     if not corpus_rows:
         if frontier["promoted_raw_json"]:
             return ("promoted_ready_for_merge", "", _action("merge_search_results", "Merge promoted frontier JSON into the durable corpus."), completed, missing, next_skill, "search")
         if frontier["candidate_paths"]:
+            if frontier["latest_candidate_count"] == 0:
+                return (
+                    "frontier_no_candidates",
+                    "",
+                    _action(
+                        "review_frontier_scope",
+                        "No candidates were found; review the profile, year window, or source scope before another frontier run.",
+                        run_id=frontier["latest_run_id"],
+                    ),
+                    completed,
+                    missing,
+                    next_skill,
+                    "search",
+                )
             return (
                 "candidate_triage",
                 "candidate_triage",
-                _action("promote_frontier_candidates", "Review candidates first; promote only explicit user-selected candidate_ids.", run_id=frontier["latest_run_id"]),
+                _action("promote_frontier_candidates", "Review candidates first; promotion processes candidates marked include.", run_id=frontier["latest_run_id"]),
                 completed,
                 missing,
                 next_skill,
@@ -352,6 +698,38 @@ def _derive_stage(
                 "search",
             )
         if frontier["profile_paths"]:
+            if frontier["query_plan_error"]:
+                missing.append("valid_frontier_query_plan")
+                return (
+                    "frontier_query_plan_invalid",
+                    "",
+                    _action(
+                        "preview_frontier_queries",
+                        "Fix the profile or max_queries before any OpenAlex collection.",
+                        profile_id=frontier["active_profile_id"],
+                        error=frontier["query_plan_error"],
+                        available_query_count=frontier["available_query_count"],
+                    ),
+                    completed,
+                    missing,
+                    next_skill,
+                    "search",
+                )
+            if frontier["max_queries"] is None:
+                missing.append("frontier_max_queries")
+                return (
+                    "frontier_query_preview_required",
+                    "",
+                    _action(
+                        "preview_frontier_queries",
+                        "Preview the profile queries, then record max_queries in frontier_settings.yml.",
+                        profile_id=frontier["active_profile_id"],
+                    ),
+                    completed,
+                    missing,
+                    next_skill,
+                    "search",
+                )
             return ("frontier_profile_ready", "", _action("collect_frontier_sources", "Collect TA-only OpenAlex source records for the reviewed profile."), completed, missing, next_skill, "search")
         missing.append("frontier_profile")
         return ("needs_frontier_profile", "", _action("draft_interest_profile", "Draft or select a reviewable frontier-push InterestProfile."), completed, missing, next_skill, "search")
@@ -370,7 +748,10 @@ def _derive_stage(
         return ("conversion_required", "", _action("convert_pdfs_with_mineru", "Convert ready PDFs with MinerU before chunking."), completed, missing, next_skill, "fulltext")
 
     if not (workspace / "06_chunks" / "chunk_index.jsonl").exists():
-        return ("chunking_required", "", _action("chunk_markdown", "Chunk converted Markdown before planning or writing."), completed, missing, next_skill, "fulltext")
+        message = "Chunk converted Markdown before planning or writing."
+        if frontier["latest_run_complete"]:
+            message = "Frontier brief is complete. If continuing into the main review, chunk converted Markdown before planning or writing."
+        return ("chunking_required", "", _action("chunk_markdown", message), completed, missing, next_skill, "fulltext")
 
     if not plan_exists:
         return ("planning_required", "", _action("build_review_plan", "Build a review plan and wait for explicit user approval."), completed, missing, "management-review-planner", "planning")
