@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
-from .profiles import InterestProfile
+from .profiles import InterestProfile, descriptive_profile_unassigned_query_terms
 
 
 SUPPORTED_TIER_A_SOURCE_IDS = ("abs3", "abs3_star", "abs4", "abs_ajg_4star", "ft50", "utd24")
@@ -358,6 +358,13 @@ def build_profile_queries(profile: InterestProfile, max_queries: int | None = No
         return cleaned[0] if len(cleaned) == 1 else f"({' OR '.join(cleaned)})"
 
     if profile.directionality == "descriptive":
+        unassigned_terms = descriptive_profile_unassigned_query_terms(profile)
+        if unassigned_terms:
+            raise ValueError(
+                "Descriptive exact_phrases/near_phrases query terms are not assigned "
+                "to any required concept group: "
+                + ", ".join(unassigned_terms)
+            )
         exact_terms = {str(term).strip().lower() for term in profile.exact_phrases if str(term).strip()}
         searchable_terms = {
             str(term).strip().lower()

@@ -59,6 +59,12 @@ def build_interest_profile_prompt(intent: str, requested_directionality: str | N
             "- Prefer established construct names, scale names, and noun-phrase terms used in article titles over literal translations.",
             "- For relationship topics, cover both concept groups with academically common terms in exact_phrases or near_phrases.",
             "- For descriptive relationship topics, provide at least two required_concept_groups; every group term must also appear in exact_phrases or near_phrases.",
+            "- In descriptive required_concept_groups, use concise, discriminative concept anchors rather than repeating the whole research question as long phrases.",
+            "- Usually provide 2-5 established aliases per descriptive concept group across exact_phrases and near_phrases.",
+            "- Provide at least one precise exact anchor per group for round 1; when multiple equally precise established aliases exist, include all of them in that group and in exact_phrases.",
+            "- Add genuine near aliases so exact+near produces a broader round 2.",
+            "- Prefer a lexical core such as 'A-share' over redundant variants such as 'A-share market' and 'A-share returns' when the shorter anchor preserves the concept.",
+            "- For descriptive profiles, every exact_phrases and near_phrases query term must be assigned to one required_concept_groups group; put scoring-only context in related_terms.",
             "- For factors_of and effects_of topics, return required_concept_groups: {}.",
             "- Include precise phrases, near phrases, broader related terms, exclusions, and JEL codes.",
             "- Keep the YAML reviewable by a human.",
@@ -76,7 +82,16 @@ def build_interest_profile_prompt(intent: str, requested_directionality: str | N
 
 
 def build_profile_audit_prompt(intent: str, profile: InterestProfile) -> str:
+    from .source_collection import build_profile_queries
+
     profile_yaml = yaml.safe_dump(profile.to_dict(), allow_unicode=True, sort_keys=False)
+    query_plan_error = ""
+    try:
+        query_plan = build_profile_queries(profile)
+    except ValueError as exc:
+        query_plan = []
+        query_plan_error = str(exc)
+    query_plan_yaml = yaml.safe_dump(query_plan, allow_unicode=True, sort_keys=False)
     return "\n".join(
         [
             "Audit this literature-search InterestProfile against the user's original research intent.",
@@ -86,6 +101,11 @@ def build_profile_audit_prompt(intent: str, profile: InterestProfile) -> str:
             "",
             "Current InterestProfile YAML:",
             profile_yaml.strip(),
+            "",
+            "Compiled OpenAlex query plan:",
+            query_plan_yaml.strip(),
+            f"Compiled query rounds: {len(query_plan)}",
+            f"Compiled query error: {query_plan_error or 'none'}",
             "",
             "Return only YAML with these fields:",
             "status: pass | needs_revision",
@@ -98,6 +118,7 @@ def build_profile_audit_prompt(intent: str, profile: InterestProfile) -> str:
             "  outcome_concept: complete | partial | missing",
             "  directionality: acceptable | review",
             "suggested_changes:",
+            "  required_concept_groups: {}",
             "  exact_phrases: []",
             "  near_phrases: []",
             "  related_terms: []",
@@ -111,6 +132,12 @@ def build_profile_audit_prompt(intent: str, profile: InterestProfile) -> str:
             "- Use bidirectional only when the intent explicitly asks for mutual, reciprocal, or two-way causality.",
             "- For descriptive relationship topics, check whether both concept groups are covered by academically common terms.",
             "- For descriptive profiles, verify that required_concept_groups separates the concepts and that each group has precise terms.",
+            "- Flag a descriptive group that relies on one over-specific long phrase when a concise lexical anchor or established aliases are available.",
+            "- Flag missing core stems and common academic aliases; usually each descriptive group should have 2-5 useful forms.",
+            "- Check that every descriptive exact_phrases and near_phrases term is assigned to a required_concept_groups group; ungrouped query terms make the profile inconsistent.",
+            "- When several equally precise aliases exist, keep them in exact_phrases and the same concept group so round 1 compiles them with OR.",
+            "- A descriptive profile with only one compiled query round needs revision unless the user's intent explicitly requires exact-only retrieval.",
+            "- suggested_changes.required_concept_groups must contain directly usable replacement groups when concept-group coverage needs revision.",
             "- Flag missing_terms when the profile uses only literal translations or adjective paraphrases but omits established construct names, scale names, or title-style noun phrases.",
             "",
             "Do not rewrite the whole profile. Do not silently assume that a broad mechanism term is a core topic term.",

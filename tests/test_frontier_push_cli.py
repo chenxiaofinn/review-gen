@@ -139,6 +139,109 @@ class FrontierPushCliTests(unittest.TestCase):
             audit_text = Path(result["profile_audit_path"]).read_text(encoding="utf-8")
             self.assertIn("status: pending", audit_text)
 
+    def test_descriptive_single_query_round_overrides_pass_audit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            drafted = {
+                "status": "drafted",
+                "profile": {
+                    "id": "a_share_asset_pricing",
+                    "name": "A-share asset pricing",
+                    "directionality": "descriptive",
+                    "target_construct": "A-share market and asset pricing",
+                    "required_concept_groups": {
+                        "market": ["A-share market"],
+                        "pricing": ["asset pricing"],
+                    },
+                    "exact_phrases": ["A-share market", "asset pricing"],
+                    "near_phrases": [],
+                    "related_terms": [],
+                    "exclude_keywords": [],
+                    "jel_codes": ["G12"],
+                    "natural_language": "Track A-share asset pricing.",
+                },
+            }
+            audit = {
+                "status": "audited",
+                "audit": {
+                    "status": "pass",
+                    "suggested_changes": {},
+                    "notes": [],
+                },
+            }
+            with patch("frontier_push.llm.draft_interest_profile", return_value=drafted), patch(
+                "frontier_push.llm.audit_interest_profile", return_value=audit
+            ):
+                result = review_workflow.draft_interest_profile(
+                    workspace,
+                    "A股市场与资产定价",
+                    "api",
+                    "descriptive",
+                )
+
+            profile_audit = result["profile_audit"]
+            self.assertEqual("needs_revision", profile_audit["audit"]["status"])
+            self.assertEqual("pending", profile_audit["user_decision"]["status"])
+            self.assertIn(
+                "only one query round",
+                " ".join(profile_audit["audit"]["notes"]),
+            )
+            self.assertIn(
+                "required_concept_groups",
+                profile_audit["audit"]["suggested_changes"],
+            )
+
+    def test_existing_pass_audit_is_stale_for_single_round_descriptive_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            review_workflow.init_frontier_push(workspace)
+            profiles_dir = workspace / "09_frontier_push" / "profiles"
+            profile_path = profiles_dir / "a_share_asset_pricing.yml"
+            profile_path.write_text(
+                "\n".join(
+                    [
+                        "id: a_share_asset_pricing",
+                        "name: A-share asset pricing",
+                        "directionality: descriptive",
+                        "target_construct: A-share market and asset pricing",
+                        "required_concept_groups:",
+                        "  market:",
+                        "    - A-share market",
+                        "  pricing:",
+                        "    - asset pricing",
+                        "exact_phrases:",
+                        "  - A-share market",
+                        "  - asset pricing",
+                        "near_phrases: []",
+                        "related_terms: []",
+                        "exclude_keywords: []",
+                        "jel_codes: []",
+                        "natural_language: Track A-share asset pricing.",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            profile_path.with_suffix(".audit.yml").write_text(
+                "audit:\n  status: pass\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "audit is stale"):
+                review_workflow.validate_profile_audit_gate(
+                    workspace,
+                    "a_share_asset_pricing",
+                )
+
+            with patch(
+                "openalex_ajg_bridge.bootstrap_repo",
+                side_effect=AssertionError("preview must stop before backend bootstrap"),
+            ):
+                with self.assertRaisesRegex(ValueError, "audit is stale"):
+                    review_workflow.preview_frontier_queries(
+                        workspace,
+                        "a_share_asset_pricing",
+                    )
+
     def test_profile_audit_pending_blocks_frontier_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)

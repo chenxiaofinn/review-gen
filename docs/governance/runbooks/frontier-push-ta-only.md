@@ -58,7 +58,10 @@ python <review-gen-home>/skills/openalex-ajg-insights/scripts/review_workflow.py
 
 For descriptive profiles, round 1 uses exact phrases in every required concept
 group. Round 2 uses exact plus near phrases in every group. Both use OR within
-groups and AND between groups. Add `max_queries: 1` or `max_queries: 2` to
+groups and AND between groups. Every exact or near query term must belong to a
+required concept group; otherwise audit, preview, collection, bridge, and MCP
+profile execution stop instead of silently ignoring the term. Add
+`max_queries: 1` or `max_queries: 2` to
 `frontier_settings.yml` after reviewing the expressions and estimated request
 count. Collection does not use a hidden default and fails before network
 access when this setting is missing or invalid.

@@ -66,7 +66,8 @@ class FrontierCandidate:
 
 
 def normalize_text(text: str) -> str:
-    return re.sub(r"\s+", " ", text or "").strip().lower()
+    normalized = re.sub(r"[\u2010-\u2015\u2212]", "-", text or "")
+    return re.sub(r"\s+", " ", normalized).strip().lower()
 
 
 def normalize_doi(value: str) -> str:
@@ -171,23 +172,30 @@ def _required_concept_reasons(record: dict[str, Any], profile: InterestProfile) 
         return []
 
     text = _combined_text(record)
-    # OpenAlex often returns recent works without an abstract.  In that case
-    # the source query is still useful retrieval evidence, but we label it as
-    # such rather than pretending it was found in the paper metadata.
+    # OpenAlex search covers title, abstract, and indexed full text, while the
+    # persisted source record only carries title and abstract.  Require at
+    # least one concept group to be visible in that persisted metadata, then
+    # allow the approved retrieval query to substantiate remaining groups.
+    # This preserves recall without treating retrieval alone as paper-level
+    # topic evidence.
     query_text = normalize_text(str(record.get("source_query") or ""))
-    metadata_missing = not str(record.get("abstract") or "").strip()
     reasons: list[str] = []
+    missing_groups: list[tuple[str, list[str]]] = []
     for group_name, terms in groups.items():
         matched = next((term for term in terms if _contains_phrase(text, term)), None)
         if matched is not None:
             reasons.append(f"required concept: {group_name} = {matched}")
             continue
-        if metadata_missing:
-            query_match = next((term for term in terms if _contains_phrase(query_text, term)), None)
-            if query_match is not None:
-                reasons.append(f"retrieval query concept: {group_name} = {query_match} (abstract unavailable)")
-                continue
+        missing_groups.append((group_name, terms))
+
+    if not reasons:
         return None
+
+    for group_name, terms in missing_groups:
+        query_match = next((term for term in terms if _contains_phrase(query_text, term)), None)
+        if query_match is None:
+            return None
+        reasons.append(f"retrieval query concept: {group_name} = {query_match}")
     return reasons
 
 

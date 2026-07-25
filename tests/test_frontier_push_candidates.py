@@ -95,7 +95,7 @@ class FrontierCandidateTests(unittest.TestCase):
         self.assertIn("required concept: work_repetition = repetitive work", candidates[0].match_reasons)
         self.assertIn("required concept: employee_outcomes = employee well-being", candidates[0].match_reasons)
 
-    def test_descriptive_candidate_uses_query_evidence_when_abstract_is_missing(self) -> None:
+    def test_descriptive_candidate_uses_query_evidence_for_one_missing_group(self) -> None:
         profile = InterestProfile.from_dict(
             {
                 "id": "a_share_asset_pricing",
@@ -127,7 +127,104 @@ class FrontierCandidateTests(unittest.TestCase):
         candidates = build_frontier_candidates(records, profile, source_id="abs3", source_tier="A")
 
         self.assertEqual(["10.1016/j.irfa.2025.104806"], [candidate.doi for candidate in candidates])
-        self.assertTrue(any("abstract unavailable" in reason for reason in candidates[0].match_reasons))
+        self.assertIn(
+            "required concept: asset_pricing = asset price",
+            candidates[0].match_reasons,
+        )
+        self.assertIn(
+            "retrieval query concept: a_share_market = A-share",
+            candidates[0].match_reasons,
+        )
+
+    def test_descriptive_candidate_rejects_query_only_evidence(self) -> None:
+        profile = InterestProfile.from_dict(
+            {
+                "id": "a_share_asset_pricing",
+                "name": "A-share asset pricing",
+                "directionality": "descriptive",
+                "target_construct": "A-share market and asset pricing",
+                "required_concept_groups": {
+                    "a_share_market": ["A-share", "Chinese stock market"],
+                    "asset_pricing": ["asset pricing", "asset price"],
+                },
+                "exact_phrases": ["A-share", "Chinese stock market", "asset pricing", "asset price"],
+                "near_phrases": [],
+                "related_terms": ["bubbles"],
+                "exclude_keywords": [],
+                "jel_codes": ["G12"],
+                "natural_language": "Track A-share asset pricing relationships.",
+            }
+        )
+        records = [
+            {
+                "title": "Investor Sentiment and Valuation",
+                "abstract": "We study investor beliefs and valuation.",
+                "source_query": '("A-share" OR "Chinese stock market") AND '
+                '("asset pricing" OR "asset price")',
+                "doi": "10.1/query-only",
+            }
+        ]
+
+        candidates = build_frontier_candidates(records, profile, source_id="abs3", source_tier="A")
+
+        self.assertEqual([], candidates)
+
+    def test_descriptive_candidate_keeps_two_metadata_concepts(self) -> None:
+        profile = relationship_profile()
+        records = [
+            {
+                "title": "Repetitive Work and Employee Well-Being",
+                "abstract": "Repetitive work is associated with employee well-being.",
+                "source_query": '"work monotony" AND "job satisfaction"',
+                "doi": "10.1/metadata-both",
+            }
+        ]
+
+        candidates = build_frontier_candidates(records, profile, source_id="ft50", source_tier="A")
+
+        self.assertEqual(["10.1/metadata-both"], [candidate.doi for candidate in candidates])
+        self.assertTrue(
+            all("retrieval query concept" not in reason for reason in candidates[0].match_reasons)
+        )
+
+    def test_descriptive_candidate_normalizes_unicode_hyphens(self) -> None:
+        profile = InterestProfile.from_dict(
+            {
+                "id": "a_share_asset_pricing",
+                "name": "A-share asset pricing",
+                "directionality": "descriptive",
+                "target_construct": "A-share market and asset pricing",
+                "required_concept_groups": {
+                    "market": ["A-share market"],
+                    "pricing": ["asset pricing"],
+                },
+                "exact_phrases": ["A-share market", "asset pricing"],
+                "near_phrases": [],
+                "related_terms": [],
+                "exclude_keywords": [],
+                "jel_codes": ["G12"],
+                "natural_language": "Track A-share asset pricing.",
+            }
+        )
+        records = [
+            {
+                "title": "Risk Dynamics of the A‐Share Market",
+                "abstract": "This study contributes to asset pricing.",
+                "source_query": '"A-share market" AND "asset pricing"',
+                "doi": "10.1/unicode-hyphen",
+            }
+        ]
+
+        candidates = build_frontier_candidates(records, profile, source_id="abs3", source_tier="A")
+
+        self.assertEqual(["10.1/unicode-hyphen"], [candidate.doi for candidate in candidates])
+        self.assertIn(
+            "required concept: market = A-share market",
+            candidates[0].match_reasons,
+        )
+        self.assertTrue(
+            all("retrieval query concept" not in reason for reason in candidates[0].match_reasons)
+        )
 
     def test_descriptive_profile_without_groups_fails_before_scoring(self) -> None:
         profile = InterestProfile(

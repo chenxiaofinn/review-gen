@@ -1132,6 +1132,28 @@ def draft_interest_profile(workspace: Path, intent: str, llm_mode: str, directio
             llm_mode=llm_mode,
             env=load_env_file(GLOBAL_ENV_PATH),
         )
+        if profile.directionality == "descriptive":
+            from frontier_push.profiles import descriptive_profile_query_plan_issues
+
+            query_plan_issues = descriptive_profile_query_plan_issues(profile)
+            audit_payload = audit_result.get("audit")
+            if (
+                query_plan_issues
+                and isinstance(audit_payload, dict)
+                and str(audit_payload.get("status") or "") == "pass"
+            ):
+                audit_payload["status"] = "needs_revision"
+                notes = audit_payload.setdefault("notes", [])
+                if not isinstance(notes, list):
+                    notes = [str(notes)]
+                    audit_payload["notes"] = notes
+                notes.extend(
+                    f"Deterministic query-plan check: {issue}."
+                    for issue in query_plan_issues
+                )
+                suggested_changes = audit_payload.setdefault("suggested_changes", {})
+                if isinstance(suggested_changes, dict):
+                    suggested_changes.setdefault("required_concept_groups", {})
         audit_status = str((audit_result.get("audit") or {}).get("status") or "")
         if audit_status == "needs_revision":
             audit_result["user_decision"] = {
@@ -1154,7 +1176,8 @@ PROFILE_AUDIT_DECISIONS = {"pending", "accepted", "partially_accepted", "rejecte
 def validate_profile_audit_gate(workspace: Path, profile_id: str) -> None:
     from frontier_push.profiles import profile_path, validate_profile_audit_path
 
-    validate_profile_audit_path(profile_path(workspace, profile_id))
+    profile_file = profile_path(workspace, profile_id)
+    validate_profile_audit_path(profile_file)
 
 
 def _frontier_source_id_from_payload(data: dict[str, Any], path: Path) -> str:
@@ -1367,6 +1390,7 @@ def preview_frontier_queries(workspace: Path, profile_id: str) -> dict[str, Any]
     from frontier_push.profiles import load_interest_profile, profile_path
     from frontier_push.source_collection import build_profile_queries, resolve_tier_a_journals
 
+    validate_profile_audit_gate(workspace, profile_id)
     settings = load_frontier_settings(workspace)
     source_ids = _coerce_source_ids(settings.get("source_ids"))
     if not source_ids:

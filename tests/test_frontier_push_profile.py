@@ -12,13 +12,21 @@ SCRIPTS_ROOT = REPO_ROOT / "skills" / "openalex-ajg-insights" / "scripts"
 if str(SCRIPTS_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_ROOT))
 
-from frontier_push.llm import audit_interest_profile, draft_interest_profile
+from frontier_push.llm import (
+    audit_interest_profile,
+    build_interest_profile_prompt,
+    build_profile_audit_prompt,
+    draft_interest_profile,
+)
 from frontier_push.profiles import (
     InterestProfile,
+    descriptive_profile_query_plan_issues,
     load_interest_profile,
     validate_interest_profile_dict,
+    validate_profile_audit_path,
     write_interest_profile,
 )
+from frontier_push.source_collection import build_profile_queries
 
 
 class InterestProfileTests(unittest.TestCase):
@@ -110,8 +118,139 @@ class InterestProfileTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "exact_phrases or near_phrases"):
             validate_interest_profile_dict(payload)
 
+    def test_shared_audit_gate_rejects_stale_single_round_descriptive_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            profile_path = Path(tmp) / "a_share_asset_pricing.yml"
+            profile = InterestProfile.from_dict(
+                {
+                    "id": "a_share_asset_pricing",
+                    "name": "A-share asset pricing",
+                    "directionality": "descriptive",
+                    "target_construct": "A-share market and asset pricing",
+                    "required_concept_groups": {
+                        "market": ["A-share market"],
+                        "pricing": ["asset pricing"],
+                    },
+                    "exact_phrases": ["A-share market", "asset pricing"],
+                    "near_phrases": [],
+                    "related_terms": [],
+                    "exclude_keywords": [],
+                    "jel_codes": ["G12"],
+                    "natural_language": "Track A-share asset pricing.",
+                }
+            )
+            write_interest_profile(profile_path, profile)
+            profile_path.with_suffix(".audit.yml").write_text(
+                "audit:\n  status: pass\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "audit is stale"):
+                validate_profile_audit_path(profile_path)
+
+    def test_shared_audit_gate_rejects_ungrouped_descriptive_query_terms(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            profile_path = Path(tmp) / "a_share_asset_pricing.yml"
+            profile = InterestProfile.from_dict(
+                {
+                    "id": "a_share_asset_pricing",
+                    "name": "A-share asset pricing",
+                    "directionality": "descriptive",
+                    "target_construct": "A-share market and asset pricing",
+                    "required_concept_groups": {
+                        "market": ["A-share", "Chinese equity market"],
+                        "pricing": ["asset pricing", "stock returns"],
+                    },
+                    "exact_phrases": [
+                        "A-share",
+                        "Chinese stock market",
+                        "asset pricing",
+                        "asset price",
+                    ],
+                    "near_phrases": ["Chinese equity market", "stock returns"],
+                    "related_terms": [],
+                    "exclude_keywords": [],
+                    "jel_codes": ["G12"],
+                    "natural_language": "Track A-share asset pricing.",
+                }
+            )
+            write_interest_profile(profile_path, profile)
+            profile_path.with_suffix(".audit.yml").write_text(
+                "audit:\n  status: pass\n",
+                encoding="utf-8",
+            )
+
+            issues = descriptive_profile_query_plan_issues(profile)
+            self.assertTrue(any("Chinese stock market" in issue for issue in issues))
+            self.assertTrue(any("asset price" in issue for issue in issues))
+            with self.assertRaisesRegex(ValueError, "not assigned"):
+                validate_profile_audit_path(profile_path)
+            with self.assertRaisesRegex(ValueError, "not assigned"):
+                build_profile_queries(profile)
+
 
 class InterestProfileLlmTests(unittest.TestCase):
+    def test_profile_prompts_require_concise_alias_rich_descriptive_groups(self) -> None:
+        draft_prompt = build_interest_profile_prompt(
+            "A股市场与资产定价",
+            requested_directionality="descriptive",
+        )
+        profile = InterestProfile.from_dict(
+            {
+                "id": "a_share_asset_pricing",
+                "name": "A-share asset pricing",
+                "directionality": "descriptive",
+                "target_construct": "A-share market and asset pricing",
+                "required_concept_groups": {
+                    "market": ["A-share", "Chinese stock market"],
+                    "pricing": ["asset pricing", "stock returns"],
+                },
+                "exact_phrases": ["A-share", "asset pricing"],
+                "near_phrases": ["Chinese stock market", "stock returns"],
+                "related_terms": ["factor models"],
+                "exclude_keywords": [],
+                "jel_codes": ["G12"],
+                "natural_language": "Track A-share asset pricing.",
+            }
+        )
+        audit_prompt = build_profile_audit_prompt("A股市场与资产定价", profile)
+
+        self.assertIn("concise, discriminative concept anchors", draft_prompt)
+        self.assertIn("2-5 established aliases", draft_prompt)
+        self.assertIn("multiple equally precise established aliases", draft_prompt)
+        self.assertIn("every exact_phrases and near_phrases", draft_prompt)
+        self.assertIn("Compiled query rounds: 2", audit_prompt)
+        self.assertIn("required_concept_groups: {}", audit_prompt)
+        self.assertIn("one over-specific long phrase", audit_prompt)
+        self.assertIn("ungrouped query terms", audit_prompt)
+        self.assertIn("Compiled query error: none", audit_prompt)
+
+    def test_audit_prompt_reports_unassigned_query_terms_without_hiding_them(self) -> None:
+        profile = InterestProfile.from_dict(
+            {
+                "id": "a_share_asset_pricing",
+                "name": "A-share asset pricing",
+                "directionality": "descriptive",
+                "target_construct": "A-share market and asset pricing",
+                "required_concept_groups": {
+                    "market": ["A-share"],
+                    "pricing": ["asset pricing"],
+                },
+                "exact_phrases": ["A-share", "Chinese stock market", "asset pricing"],
+                "near_phrases": [],
+                "related_terms": [],
+                "exclude_keywords": [],
+                "jel_codes": ["G12"],
+                "natural_language": "Track A-share asset pricing.",
+            }
+        )
+
+        audit_prompt = build_profile_audit_prompt("A股市场与资产定价", profile)
+
+        self.assertIn("Compiled query rounds: 0", audit_prompt)
+        self.assertIn("Chinese stock market", audit_prompt)
+        self.assertIn("not assigned", audit_prompt)
+
     def test_draft_interest_profile_without_key_returns_prompt_fallback(self) -> None:
         result = draft_interest_profile(
             intent="检索企业资产定价影响因素的相关文献",

@@ -153,6 +153,68 @@ def profile_path(workspace: Path, profile_id: str) -> Path:
     return workspace / "09_frontier_push" / "profiles" / f"{profile_id}.yml"
 
 
+def descriptive_profile_unassigned_query_terms(profile: InterestProfile) -> list[str]:
+    if profile.directionality != "descriptive":
+        return []
+    grouped_terms = {
+        _clean_string(term).lower()
+        for terms in profile.required_concept_groups.values()
+        for term in terms
+        if _clean_string(term)
+    }
+    return [
+        _clean_string(term)
+        for term in [*profile.exact_phrases, *profile.near_phrases]
+        if _clean_string(term).lower() not in grouped_terms
+    ]
+
+
+def descriptive_profile_query_plan_issues(profile: InterestProfile) -> list[str]:
+    if profile.directionality != "descriptive":
+        return []
+    exact_terms = {
+        _clean_string(term).lower()
+        for term in profile.exact_phrases
+        if _clean_string(term)
+    }
+    searchable_terms = {
+        _clean_string(term).lower()
+        for term in [*profile.exact_phrases, *profile.near_phrases]
+        if _clean_string(term)
+    }
+    exact_groups = [
+        tuple(
+            _clean_string(term).lower()
+            for term in terms
+            if _clean_string(term).lower() in exact_terms
+        )
+        for terms in profile.required_concept_groups.values()
+    ]
+    expanded_groups = [
+        tuple(
+            _clean_string(term).lower()
+            for term in terms
+            if _clean_string(term).lower() in searchable_terms
+        )
+        for terms in profile.required_concept_groups.values()
+    ]
+    issues: list[str] = []
+    if expanded_groups == exact_groups:
+        issues.append(
+            "the profile compiles only one query round; add genuine near aliases "
+            "or explicitly reject this recommendation"
+        )
+
+    orphaned_query_terms = descriptive_profile_unassigned_query_terms(profile)
+    if orphaned_query_terms:
+        issues.append(
+            "exact_phrases/near_phrases contain query terms that are not assigned "
+            "to any required concept group: "
+            + ", ".join(orphaned_query_terms)
+        )
+    return issues
+
+
 def validate_profile_audit_path(path: Path) -> None:
     audit_path = path.with_suffix(".audit.yml")
     if not audit_path.exists():
@@ -161,6 +223,15 @@ def validate_profile_audit_path(path: Path) -> None:
     if not isinstance(payload, dict):
         raise ValueError(f"Profile audit must be a YAML mapping: {audit_path}")
     audit_status = str((payload.get("audit") or {}).get("status") or "")
+    if audit_status == "pass" and path.exists():
+        profile = load_interest_profile(path)
+        query_plan_issues = descriptive_profile_query_plan_issues(profile)
+        if query_plan_issues:
+            raise ValueError(
+                "Profile audit is stale under the current descriptive query-plan rules: "
+                + " | ".join(query_plan_issues)
+                + ". Revise and audit the profile again before preview or collection."
+            )
     if audit_status != "needs_revision":
         return
     decision = payload.get("user_decision") or {}
